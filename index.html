@@ -1,0 +1,522 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Tee Time Booker</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg:        #f5f4f0;
+    --surface:   #ffffff;
+    --surface2:  #f0ede8;
+    --border:    rgba(0,0,0,0.10);
+    --border2:   rgba(0,0,0,0.18);
+    --text:      #1a1a18;
+    --text2:     #6b6b67;
+    --text3:     #9e9e9a;
+    --green:     #1D9E75;
+    --green-dk:  #0F6E56;
+    --green-bg:  #E1F5EE;
+    --green-txt: #0F6E56;
+    --red:       #A32D2D;
+    --red-bg:    #FCEBEB;
+    --radius:    10px;
+    --radius-lg: 14px;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:        #1c1c1a;
+      --surface:   #272724;
+      --surface2:  #313130;
+      --border:    rgba(255,255,255,0.10);
+      --border2:   rgba(255,255,255,0.18);
+      --text:      #edecea;
+      --text2:     #a0a09c;
+      --text3:     #6b6b67;
+      --green-bg:  #085041;
+      --green-txt: #9FE1CB;
+      --red-bg:    #501313;
+      --red:       #F09595;
+    }
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    padding: 2rem 1rem 4rem;
+  }
+
+  .wrap { max-width: 480px; margin: 0 auto; }
+
+  header { margin-bottom: 2rem; }
+  .header-row { display: flex; align-items: center; justify-content: space-between; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon {
+    width: 36px; height: 36px; background: var(--green); border-radius: 9px;
+    display: flex; align-items: center; justify-content: center; font-size: 18px;
+  }
+  h1 { font-size: 18px; font-weight: 600; color: var(--text); }
+  .subtitle { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+  .section-label {
+    font-size: 11px; font-weight: 600; color: var(--text3);
+    letter-spacing: 0.07em; text-transform: uppercase;
+    margin-bottom: 8px; margin-top: 1.75rem;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1.1rem 1.25rem;
+  }
+
+  .status-row { display: flex; align-items: center; justify-content: space-between; }
+  .status-left { display: flex; align-items: center; gap: 10px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; transition: background 0.3s; }
+  .dot-on  { background: var(--green); }
+  .dot-off { background: var(--text3); }
+  .status-title { font-size: 15px; font-weight: 500; }
+  .status-sub   { font-size: 13px; color: var(--text2); margin-top: 2px; }
+
+  .toggle-wrap { position: relative; width: 42px; height: 24px; flex-shrink: 0; }
+  .toggle-wrap input { opacity: 0; width: 0; height: 0; }
+  .tog-track {
+    position: absolute; inset: 0;
+    background: var(--border2); border-radius: 12px;
+    cursor: pointer; transition: background 0.2s;
+  }
+  .tog-track::before {
+    content: ''; position: absolute;
+    width: 18px; height: 18px; background: #fff;
+    border-radius: 50%; left: 3px; top: 3px;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+  }
+  .toggle-wrap input:checked + .tog-track { background: var(--green); }
+  .toggle-wrap input:checked + .tog-track::before { transform: translateX(18px); }
+
+  .divider { border: none; border-top: 0.5px solid var(--border); margin: 1rem 0; }
+
+  .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .field { display: flex; flex-direction: column; gap: 5px; }
+  .field.full { grid-column: 1 / -1; }
+  .field label { font-size: 12px; color: var(--text2); font-weight: 500; }
+  .field input, .field select {
+    background: var(--surface2);
+    border: 0.5px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    font-size: 14px;
+    color: var(--text);
+    font-family: inherit;
+    width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+  }
+  .field input:focus, .field select:focus {
+    outline: none; border-color: var(--green);
+  }
+
+  .btn-row { display: flex; gap: 8px; margin-top: 1rem; }
+  .btn {
+    flex: 1; padding: 10px 0;
+    border-radius: var(--radius);
+    font-size: 14px; font-weight: 500;
+    cursor: pointer; border: 0.5px solid var(--border2);
+    background: var(--surface); color: var(--text);
+    font-family: inherit; transition: background 0.15s, transform 0.1s;
+  }
+  .btn:hover { background: var(--surface2); }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary { background: var(--green); color: #fff; border-color: var(--green); }
+  .btn-primary:hover { background: var(--green-dk); border-color: var(--green-dk); }
+  .btn-cancel { color: var(--red); }
+
+  .metric-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .metric { background: var(--surface2); border-radius: var(--radius); padding: 0.75rem 0.9rem; }
+  .metric-label { font-size: 11px; color: var(--text3); margin-bottom: 4px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; }
+  .metric-val { font-size: 22px; font-weight: 600; color: var(--text); }
+  .metric-val.small { font-size: 13px; padding-top: 3px; line-height: 1.4; }
+
+  .log-box {
+    background: var(--surface2); border-radius: var(--radius);
+    padding: 0.75rem 1rem; font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 12px; line-height: 1.8; max-height: 130px; overflow-y: auto;
+  }
+  .log-entry { display: flex; gap: 10px; }
+  .log-ts   { color: var(--text3); flex-shrink: 0; min-width: 42px; }
+  .log-ok   { color: var(--green); }
+  .log-err  { color: var(--red); }
+  .log-info { color: var(--text2); }
+
+  .toast {
+    position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%) translateY(80px);
+    background: var(--text); color: var(--bg);
+    padding: 10px 20px; border-radius: 999px; font-size: 14px; font-weight: 500;
+    opacity: 0; transition: transform 0.3s, opacity 0.3s; pointer-events: none; white-space: nowrap;
+  }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  .toast.err  { background: var(--red); color: #fff; }
+
+  .setup-banner {
+    background: var(--surface); border: 0.5px solid var(--border);
+    border-radius: var(--radius-lg); padding: 1.5rem 1.25rem; text-align: center;
+  }
+  .setup-banner h2 { font-size: 16px; font-weight: 600; margin-bottom: 6px; }
+  .setup-banner p  { font-size: 13px; color: var(--text2); line-height: 1.6; margin-bottom: 1rem; }
+  .setup-banner input {
+    width: 100%; background: var(--surface2); border: 0.5px solid var(--border);
+    border-radius: var(--radius); padding: 9px 12px; font-size: 14px;
+    color: var(--text); font-family: inherit; margin-bottom: 8px;
+  }
+  .setup-banner input:focus { outline: none; border-color: var(--green); }
+  .help-link { font-size: 12px; color: var(--text3); margin-top: 8px; }
+  .help-link a { color: var(--green); text-decoration: none; }
+
+  .spinner {
+    display: inline-block; width: 14px; height: 14px;
+    border: 2px solid rgba(255,255,255,0.4); border-top-color: #fff;
+    border-radius: 50%; animation: spin 0.6s linear infinite; vertical-align: middle; margin-right: 6px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  select option { background: var(--surface); color: var(--text); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="header-row">
+      <div class="logo">
+        <div class="logo-icon">⛳</div>
+        <div>
+          <h1>Tee Time Booker</h1>
+          <div class="subtitle" id="clubName">Intelligent Golf</div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Setup screen (shown when no token saved) -->
+  <div id="setupScreen" style="display:none;">
+    <div class="setup-banner">
+      <h2>Connect to GitHub</h2>
+      <p>Enter your GitHub details to read and update your booking config directly from this page.</p>
+      <input type="text"     id="setupOwner"  placeholder="GitHub username (e.g. johnsmith)" autocomplete="off">
+      <input type="text"     id="setupRepo"   placeholder="Repository name (e.g. tee-booker)" autocomplete="off">
+      <input type="password" id="setupToken"  placeholder="GitHub Personal Access Token">
+      <button class="btn btn-primary" style="width:100%; margin-top:4px;" onclick="saveSetup()">Connect</button>
+      <p class="help-link">Need a token? <a href="https://github.com/settings/tokens/new?scopes=repo&description=Tee+Booker" target="_blank">Create one here</a> with <strong>repo</strong> scope.</p>
+    </div>
+  </div>
+
+  <!-- Main dashboard (shown when connected) -->
+  <div id="mainScreen" style="display:none;">
+
+    <div class="section-label">Status</div>
+    <div class="card">
+      <div class="status-row">
+        <div class="status-left">
+          <div class="dot" id="statusDot"></div>
+          <div>
+            <div class="status-title" id="statusTitle">—</div>
+            <div class="status-sub"   id="statusSub">—</div>
+          </div>
+        </div>
+        <label class="toggle-wrap">
+          <input type="checkbox" id="enabledToggle" onchange="onToggle()">
+          <span class="tog-track"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="section-label">This week's request</div>
+    <div class="card">
+      <div class="field-grid">
+        <div class="field full">
+          <label>Target date</label>
+          <input type="date" id="targetDate">
+        </div>
+        <div class="field">
+          <label>Earliest time</label>
+          <input type="time" id="prefStart" value="07:00">
+        </div>
+        <div class="field">
+          <label>Latest time</label>
+          <input type="time" id="prefEnd" value="10:00">
+        </div>
+        <div class="field">
+          <label>Players</label>
+          <select id="numPlayers">
+            <option value="1">1 player</option>
+            <option value="2">2 players</option>
+            <option value="3" selected>3 players</option>
+            <option value="4">4 players</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>If window full</label>
+          <select id="fallback">
+            <option value="nearest" selected>Book nearest slot</option>
+            <option value="notify">Notify me only</option>
+          </select>
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="saveBtn" onclick="saveRequest()">Save &amp; enable</button>
+        <button class="btn btn-cancel"  onclick="cancelRequest()">Cancel booking</button>
+      </div>
+    </div>
+
+    <div class="section-label">History</div>
+    <div class="metric-grid">
+      <div class="metric">
+        <div class="metric-label">Booked</div>
+        <div class="metric-val" id="metBooked">—</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">In window</div>
+        <div class="metric-val" id="metInWindow">—</div>
+      </div>
+      <div class="metric">
+        <div class="metric-label">Last booking</div>
+        <div class="metric-val small" id="metLast">—</div>
+      </div>
+    </div>
+    <div class="log-box" id="logBox">
+      <div class="log-entry"><span class="log-ts">—</span><span class="log-info">No activity yet</span></div>
+    </div>
+
+    <div class="section-label" style="margin-top:1.75rem;">Settings</div>
+    <div class="card">
+      <div class="field-grid">
+        <div class="field full">
+          <label>Club name (display only)</label>
+          <input type="text" id="setClubName" placeholder="e.g. Sunningdale Golf Club">
+        </div>
+      </div>
+      <div class="btn-row">
+        <button class="btn" onclick="saveSettings()">Save settings</button>
+        <button class="btn" style="color:var(--text3); font-size:13px;" onclick="disconnect()">Disconnect GitHub</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const CONFIG_FILE = 'booking_request.json';
+
+function getGH() {
+  return {
+    owner: localStorage.getItem('gh_owner'),
+    repo:  localStorage.getItem('gh_repo'),
+    token: localStorage.getItem('gh_token'),
+  };
+}
+
+function nextSaturday() {
+  const d = new Date();
+  const diff = (6 - d.getDay() + 7) % 7 || 7;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().split('T')[0];
+}
+
+function fmtDate(s) {
+  if (!s) return '—';
+  const d = new Date(s + 'T00:00:00');
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+}
+
+function toast(msg, err) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = 'toast show' + (err ? ' err' : '');
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => el.className = 'toast', 2800);
+}
+
+async function ghGet(path) {
+  const { owner, repo, token } = getGH();
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json' }
+  });
+  if (!r.ok) throw new Error('GitHub fetch failed: ' + r.status);
+  return r.json();
+}
+
+async function ghPut(path, content, sha, message) {
+  const { owner, repo, token } = getGH();
+  const r = await fetch(`https://api.github.com/repos/${owner}/${repo}/contents/${path}`, {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github.v3+json`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, content: btoa(unescape(encodeURIComponent(JSON.stringify(content, null, 4)))), sha })
+  });
+  if (!r.ok) { const e = await r.json(); throw new Error(e.message || 'GitHub write failed'); }
+  return r.json();
+}
+
+let _config = null;
+let _sha    = null;
+
+async function loadConfig() {
+  const data   = await ghGet(CONFIG_FILE);
+  _sha         = data.sha;
+  _config      = JSON.parse(decodeURIComponent(escape(atob(data.content.replace(/\n/g, '')))));
+  return _config;
+}
+
+function renderConfig(cfg) {
+  const enabled = !!cfg.enabled;
+  document.getElementById('enabledToggle').checked = enabled;
+  document.getElementById('statusDot').className   = 'dot ' + (enabled ? 'dot-on' : 'dot-off');
+  document.getElementById('statusTitle').textContent = enabled ? 'Booking requested' : 'Not scheduled';
+  document.getElementById('statusSub').textContent   = enabled
+    ? 'Targeting ' + (cfg.target_date ? fmtDate(cfg.target_date) : '(no date set)')
+    : 'Toggle on to schedule a booking';
+
+  document.getElementById('targetDate').value  = cfg.target_date     || nextSaturday();
+  document.getElementById('prefStart').value   = (cfg.preferences && cfg.preferences.preferred_start) || '07:00';
+  document.getElementById('prefEnd').value     = (cfg.preferences && cfg.preferences.preferred_end)   || '10:00';
+  document.getElementById('numPlayers').value  = String((cfg.preferences && cfg.preferences.num_players) || 3);
+  document.getElementById('fallback').value    = (cfg.preferences && cfg.preferences.fallback)         || 'nearest';
+
+  const hist = cfg.history || [];
+  const booked   = hist.filter(h => h.ok);
+  const inWindow = booked.filter(h => h.in_window);
+  document.getElementById('metBooked').textContent   = booked.length || '0';
+  document.getElementById('metInWindow').textContent = booked.length ? inWindow.length + '/' + booked.length : '—';
+  const last = booked.slice(-1)[0];
+  document.getElementById('metLast').textContent = last ? last.time + '\n' + fmtDate(last.date) : '—';
+
+  const logBox = document.getElementById('logBox');
+  if (!hist.length) {
+    logBox.innerHTML = '<div class="log-entry"><span class="log-ts">—</span><span class="log-info">No activity yet</span></div>';
+  } else {
+    logBox.innerHTML = [...hist].reverse().slice(0, 30).map(h => {
+      const cls = h.ok ? 'log-ok' : 'log-err';
+      const msg = h.ok
+        ? '✓ ' + fmtDate(h.date) + ' · ' + (h.time || '?') + (h.in_window ? '' : ' (outside window)')
+        : '✗ ' + fmtDate(h.date) + ' · ' + (h.error || 'error');
+      return `<div class="log-entry"><span class="log-ts">${h.ts||''}</span><span class="${cls}">${msg}</span></div>`;
+    }).join('');
+  }
+
+  const cn = localStorage.getItem('club_name') || 'Intelligent Golf';
+  document.getElementById('clubName').textContent     = cn;
+  document.getElementById('setClubName').value        = cn;
+}
+
+async function onToggle() {
+  _config.enabled = document.getElementById('enabledToggle').checked;
+  renderConfig(_config);
+}
+
+async function saveRequest() {
+  const btn = document.getElementById('saveBtn');
+  btn.innerHTML = '<span class="spinner"></span>Saving…';
+  btn.disabled = true;
+
+  _config.enabled    = document.getElementById('enabledToggle').checked;
+  _config.target_date = document.getElementById('targetDate').value;
+  _config.preferences = {
+    preferred_start: document.getElementById('prefStart').value,
+    preferred_end:   document.getElementById('prefEnd').value,
+    num_players:     parseInt(document.getElementById('numPlayers').value),
+    fallback:        document.getElementById('fallback').value,
+  };
+
+  try {
+    const res = await ghPut(CONFIG_FILE, _config, _sha, 'Update booking request via dashboard');
+    _sha = res.content.sha;
+    toast('Saved to GitHub ✓');
+    renderConfig(_config);
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    btn.innerHTML = 'Save &amp; enable';
+    btn.disabled  = false;
+  }
+}
+
+async function cancelRequest() {
+  _config.enabled = false;
+  document.getElementById('enabledToggle').checked = false;
+  renderConfig(_config);
+  const btn = document.getElementById('saveBtn');
+  btn.innerHTML = '<span class="spinner"></span>Saving…';
+  btn.disabled = true;
+  try {
+    const res = await ghPut(CONFIG_FILE, _config, _sha, 'Cancel booking request via dashboard');
+    _sha = res.content.sha;
+    toast('Booking cancelled');
+  } catch(e) {
+    toast(e.message, true);
+  } finally {
+    btn.innerHTML = 'Save &amp; enable';
+    btn.disabled  = false;
+  }
+}
+
+function saveSettings() {
+  const cn = document.getElementById('setClubName').value.trim();
+  if (cn) {
+    localStorage.setItem('club_name', cn);
+    document.getElementById('clubName').textContent = cn;
+  }
+  toast('Settings saved');
+}
+
+function disconnect() {
+  if (!confirm('Disconnect GitHub? Your booking history stays in the JSON file.')) return;
+  ['gh_owner','gh_repo','gh_token'].forEach(k => localStorage.removeItem(k));
+  showSetup();
+}
+
+function showSetup() {
+  document.getElementById('setupScreen').style.display = '';
+  document.getElementById('mainScreen').style.display  = 'none';
+}
+
+function showMain() {
+  document.getElementById('setupScreen').style.display = 'none';
+  document.getElementById('mainScreen').style.display  = '';
+}
+
+async function saveSetup() {
+  const owner = document.getElementById('setupOwner').value.trim();
+  const repo  = document.getElementById('setupRepo').value.trim();
+  const token = document.getElementById('setupToken').value.trim();
+  if (!owner || !repo || !token) { toast('Please fill in all fields', true); return; }
+  localStorage.setItem('gh_owner', owner);
+  localStorage.setItem('gh_repo',  repo);
+  localStorage.setItem('gh_token', token);
+  await init();
+}
+
+async function init() {
+  const { owner, repo, token } = getGH();
+  if (!owner || !repo || !token) { showSetup(); return; }
+  showMain();
+  try {
+    const cfg = await loadConfig();
+    renderConfig(cfg);
+  } catch(e) {
+    toast('Could not load config: ' + e.message, true);
+    showSetup();
+  }
+}
+
+init();
+</script>
+</body>
+</html>
