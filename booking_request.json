@@ -1,8 +1,8 @@
 {
     "_instructions": "Set 'enabled' to true and fill in 'target_date' (YYYY-MM-DD) to request a booking. The bot will reset 'enabled' to false automatically after a successful booking.",
 
-    "enabled": false,
-    "target_date": "",
+    "enabled": true,
+    "target_date": "2026-04-09",
 
     "preferences": {
         "preferred_start": "07:00",
