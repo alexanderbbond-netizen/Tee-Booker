@@ -3,17 +3,25 @@ Intelligent Golf Tee Time Booking Bot
 ======================================
 Automatically books a tee time on intelligentgolf.co.uk.
 
-Called by scheduler.py with the date and preferences read from
-booking_request.json. Can also be run directly for testing.
+Called by scheduler.py with preferences from booking_request.json.
 
-Stealth features:
-  - Masks navigator.webdriver flag
-  - Realistic browser fingerprint (viewport, user-agent, locale, timezone)
-  - Human-like random delays between every action
-  - Natural multi-step mouse movement before every click
-  - Randomised typing speed on login form
-  - Decoy hover interactions before selecting the target slot
-  - Visits homepage before /login (not a direct jump)
+Parameters
+----------
+target_date     : Date to book, YYYY-MM-DD.
+preferred_start : Earliest acceptable tee time, HH:MM.
+preferred_end   : Latest acceptable tee time,   HH:MM.
+num_players     : Number of players (1–4).
+dry_run         : If True, stops before the final confirm click.
+
+Stealth features
+----------------
+- Masks navigator.webdriver flag
+- Realistic browser fingerprint (viewport, user-agent, locale, timezone)
+- Human-like random delays between every action
+- Natural multi-step mouse movement before every click
+- Randomised typing speed on login form
+- Decoy hover interactions before selecting the target slot
+- Visits homepage before /login
 """
 
 import os
@@ -29,7 +37,6 @@ from zoneinfo import ZoneInfo
 
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-# ── Logging ────────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -37,7 +44,6 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Config from environment variables ─────────────────────────────────────────
 IG_CLUB_URL  = os.environ["IG_CLUB_URL"]
 IG_USERNAME  = os.environ["IG_USERNAME"]
 IG_PASSWORD  = os.environ["IG_PASSWORD"]
@@ -50,7 +56,6 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 
 UK_TZ = ZoneInfo("Europe/London")
 
-# ── Realistic browser fingerprints ────────────────────────────────────────────
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -196,24 +201,16 @@ def book_tee_time(
     preferred_start: str  = "07:00",
     preferred_end:   str  = "10:00",
     num_players:     int  = 3,
+    dry_run:         bool = False,
 ):
-    """
-    Log in to Intelligent Golf and book the best available tee time.
-
-    Parameters
-    ----------
-    target_date     : Date to book, YYYY-MM-DD. Defaults to next Saturday.
-    preferred_start : Earliest acceptable tee time, HH:MM.
-    preferred_end   : Latest acceptable tee time, HH:MM.
-    num_players     : Number of players (1–4).
-    """
     if not target_date:
         now = datetime.now(UK_TZ)
         days_ahead  = (5 - now.weekday()) % 7 or 7
         target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
-    log.info("Targeting: %s  |  window: %s–%s  |  players: %d",
-             target_date, preferred_start, preferred_end, num_players)
+    mode_label = " [DRY RUN]" if dry_run else ""
+    log.info("Targeting%s: %s  |  window: %s–%s  |  players: %d",
+             mode_label, target_date, preferred_start, preferred_end, num_players)
 
     with sync_playwright() as p:
         browser, context = make_stealth_context(p)
@@ -232,7 +229,7 @@ def book_tee_time(
             page.goto(f"{IG_CLUB_URL}/login", wait_until="networkidle")
             human_pause(0.8, 1.8)
 
-            # 3. Type credentials
+            # 3. Credentials
             log.info("Entering credentials…")
             human_type(page, 'input[name="username"], input[type="email"]', IG_USERNAME)
             human_pause(0.5, 1.2)
@@ -243,7 +240,7 @@ def book_tee_time(
 
             if "login" in page.url.lower():
                 raise RuntimeError("Login failed – check IG_USERNAME / IG_PASSWORD.")
-            log.info("Logged in.")
+            log.info("Logged in successfully.")
             human_pause(1.0, 2.2)
 
             # 4. Tee booking page
@@ -261,7 +258,7 @@ def book_tee_time(
                 page.wait_for_load_state("networkidle")
                 log.info("Selected date: %s", target_date)
             except PlaywrightTimeout:
-                log.warning("Date cell not found – trying calendar navigation.")
+                log.warning("Date cell not found — trying calendar navigation.")
                 human_move_and_click(page, 'a.next, button.fc-next-button, [aria-label="next"]')
                 page.wait_for_load_state("networkidle")
                 human_pause(0.5, 1.2)
@@ -299,9 +296,9 @@ def book_tee_time(
                 raise RuntimeError("Could not determine a slot to book.")
 
             in_win = time_in_window(chosen["time"], preferred_start, preferred_end)
-            log.info("Chosen: %s  (in window: %s)", chosen["time"], in_win)
+            log.info("Chosen slot: %s  (in window: %s)", chosen["time"], in_win)
 
-            # Hover over 1–2 decoy slots first
+            # Hover over decoy slots
             for d in random.sample([s for s in slots if s is not chosen],
                                    k=min(2, len(slots) - 1)):
                 box = d["element"].bounding_box()
@@ -309,6 +306,14 @@ def book_tee_time(
                     page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
                     micro_pause(0.15, 0.45)
             human_pause(0.4, 1.0)
+
+            # ── DRY RUN stops here ─────────────────────────────────────────────
+            if dry_run:
+                page.screenshot(path="/tmp/dry_run_slots.png")
+                log.info("🔍 DRY RUN complete. Would have booked: %s on %s for %d players.",
+                         chosen["time"], target_date, num_players)
+                log.info("Screenshot saved to /tmp/dry_run_slots.png")
+                return True
 
             # 8. Click slot
             human_move_and_click_element(page, chosen["element"])
@@ -324,11 +329,9 @@ def book_tee_time(
                 human_pause(0.5, 1.0)
             except Exception:
                 try:
-                    human_move_and_click(
-                        page,
+                    human_move_and_click(page,
                         f'[data-players="{num_players}"], '
-                        f'input[value="{num_players}"][name*="player"]'
-                    )
+                        f'input[value="{num_players}"][name*="player"]')
                     human_pause(0.5, 1.0)
                 except Exception:
                     log.warning("Could not set player count – using site default.")
@@ -337,43 +340,37 @@ def book_tee_time(
             human_pause(1.2, 2.8)
 
             # 11. Confirm
-            human_move_and_click(
-                page,
+            human_move_and_click(page,
                 'button[type="submit"], input[type="submit"], '
-                'a.confirm-booking, button:has-text("Confirm"), button:has-text("Book")'
-            )
+                'a.confirm-booking, button:has-text("Confirm"), button:has-text("Book")')
             page.wait_for_load_state("networkidle")
             human_pause(0.5, 1.2)
 
             # 12. Verify
             content = page.content().lower()
             if any(w in content for w in ["confirmed", "booked", "booking reference", "thank you"]):
-                msg = (f"✅ Tee time BOOKED!\n"
+                msg = (f"Tee time BOOKED!\n"
                        f"Date:    {target_date}\n"
                        f"Time:    {chosen['time']}\n"
                        f"Players: {num_players}\n"
                        f"In preferred window: {in_win}")
                 log.info(msg)
-                send_notification(f"⛳ Tee time booked – {chosen['time']} on {target_date}", msg)
+                send_notification(
+                    f"Tee time booked – {chosen['time']} on {target_date}", msg)
                 return True
             else:
                 page.screenshot(path="/tmp/booking_failed.png")
                 raise RuntimeError(
-                    "Confirmation text not found. Screenshot: /tmp/booking_failed.png"
-                )
+                    "Confirmation text not found. Screenshot: /tmp/booking_failed.png")
 
         except Exception as exc:
             log.error("Booking failed: %s", exc)
-            send_notification(
-                "❌ Tee time booking FAILED",
-                f"Error:\n\n{exc}\n\nPlease book manually."
-            )
+            send_notification("Tee time booking FAILED",
+                f"Error:\n\n{exc}\n\nPlease book manually.")
             raise
         finally:
             browser.close()
 
-
-# ── Entry point (for manual testing) ──────────────────────────────────────────
 
 if __name__ == "__main__":
     book_tee_time()
