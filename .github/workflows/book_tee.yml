@@ -2,7 +2,7 @@ name: Tee Time Booker
 
 on:
   schedule:
-    - cron: '55 19 * * 6'   # 19:55 UTC every Saturday (adjust for BST — see below)
+    - cron: '55 18 * * 6'   # 19:55 UTC every Saturday (adjust for BST — see below)
   workflow_dispatch:          # allows you to trigger it manually from GitHub too
 
 jobs:
