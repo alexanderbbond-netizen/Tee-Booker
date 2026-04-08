@@ -1,0 +1,13 @@
+{
+    "_instructions": "Set 'enabled' to true and fill in 'target_date' (YYYY-MM-DD) to request a booking. The bot will reset 'enabled' to false automatically after a successful booking.",
+
+    "enabled": false,
+    "target_date": "",
+
+    "preferences": {
+        "preferred_start": "07:00",
+        "preferred_end": "10:00",
+        "num_players": 3,
+        "fallback": "nearest"
+    }
+}
