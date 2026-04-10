@@ -387,28 +387,51 @@ def book_tee_time(
             log.info("Screenshot of booking page saved.")
 
             # 6. Find available tee time rows
-            # Layout: each row has [time][player1][player2][player3][player4]
-            # A row is bookable if it has enough empty player slots
+            # The booking page shows rows with a green "Book" button when slots are free.
+            # Rows showing "4 slots available" are fully empty.
+            # We only pick rows with enough space for our whole group.
             log.info("Scanning for available tee time slots…")
-            # tr elements are already in the DOM — no need to wait
             human_pause(1.0, 2.0)
 
             all_rows = page.query_selector_all("tr")
             slots = []
             for row in all_rows:
                 row_text = row.inner_text().strip()
+
+                # Must start with a time like "07:20"
                 time_match = re.search(r"^(\d{2}:\d{2})", row_text)
                 if not time_match:
                     continue
                 t = time_match.group(1)
 
-                # Count filled player cells (non-empty td after the time cell)
-                cells = row.query_selector_all("td")
-                player_cells  = [c for c in cells[1:] if c.inner_text().strip()]
-                empty_slots   = max(0, 4 - len(player_cells))
+                # Only consider rows that have a green "Book" button
+                book_btn = row.query_selector('button:has-text("Book"), a:has-text("Book")')
+                if not book_btn:
+                    continue
+
+                # Count empty slots:
+                # "4 slots available" = 4 empty, "3 slots available" = 3, etc.
+                avail_match = re.search(r"(\d+)\s+slots?\s+available", row_text, re.IGNORECASE)
+                if avail_match:
+                    empty_slots = int(avail_match.group(1))
+                else:
+                    # Row has some players but still has a Book button — count filled cells
+                    cells = row.query_selector_all("td")
+                    filled = sum(
+                        1 for c in cells[1:]
+                        if c.inner_text().strip()
+                        and "book" not in c.inner_text().strip().lower()
+                        and "slot" not in c.inner_text().strip().lower()
+                    )
+                    empty_slots = max(0, 4 - filled)
 
                 if empty_slots >= num_players:
-                    slots.append({"time": t, "element": row, "empty": empty_slots})
+                    slots.append({
+                        "time": t,
+                        "element": row,
+                        "book_btn": book_btn,
+                        "empty": empty_slots,
+                    })
                     log.info("  Available: %s (%d empty slots)", t, empty_slots)
 
             if not slots:
@@ -438,47 +461,97 @@ def book_tee_time(
                     micro_pause(0.2, 0.5)
             human_pause(0.5, 1.0)
 
-            # 8. Click the tee time row to open the booking form
-            log.info("Clicking tee time row: %s", chosen["time"])
-            human_move_and_click_element(page, chosen["element"])
-            page.wait_for_load_state("networkidle")
-            human_pause(0.8, 1.5)
-            log.info("Post-click URL: %s", page.url)
-            page.screenshot(path="/tmp/after_slot_click.png")
+            # 8. Click the green "Book" button on the chosen row
+            log.info("Clicking Book button for: %s", chosen["time"])
+            human_move_and_click_element(page, chosen["book_btn"])
+            human_pause(1.0, 2.0)
+            page.screenshot(path="/tmp/after_book_click.png")
+            log.info("Post-Book-click URL: %s", page.url)
 
-            # 9. DRY RUN — stop before confirming
+            # 9. DRY RUN — stop before adding players
             if dry_run:
-                log.info("🔍 DRY RUN — stopping before confirmation. "
+                log.info("🔍 DRY RUN — stopping before player selection. "
                          "Would have booked %s on %s for %d players.",
                          chosen["time"], target_date, num_players)
                 return True
 
-            # 10. Review pause (human reads the confirmation screen)
-            human_pause(1.5, 3.0)
+            # 10. Add playing partners
+            # After clicking Book, a modal appears: "Who are you playing with?"
+            # with buttons "ANOTHER MEMBER" and "A GUEST".
+            # We need to add (num_players - 1) partners (player 1 is us).
+            # Strategy: click "ANOTHER MEMBER", pick a random name from the list,
+            # repeat for each additional player.
+            log.info("Adding %d playing partner(s)…", num_players - 1)
 
-            # 11. Confirm the booking
-            confirmed = False
-            for confirm_sel in [
-                'button:has-text("Confirm")',
-                'button:has-text("Book")',
-                'input[value="Confirm"]',
-                'input[value="Book"]',
-                'button[type="submit"]',
-                'input[type="submit"]',
-                'a:has-text("Confirm")',
-            ]:
-                btn = page.query_selector(confirm_sel)
-                if btn:
-                    log.info("Clicking confirm: %s", confirm_sel)
-                    human_move_and_click_element(page, btn)
-                    page.wait_for_load_state("networkidle")
-                    confirmed = True
+            for partner_num in range(1, num_players):
+                human_pause(0.8, 1.5)
+                page.screenshot(path=f"/tmp/partner_{partner_num}_modal.png")
+
+                # Wait for the "Who are you playing with?" modal
+                try:
+                    page.wait_for_selector(
+                        'button:has-text("A GUEST"), button:has-text("A Guest")',
+                        timeout=10_000
+                    )
+                except PlaywrightTimeout:
+                    log.warning("Partner modal not visible for partner %d — skipping.", partner_num)
                     break
 
-            if not confirmed:
-                page.screenshot(path="/tmp/no_confirm_btn.png")
-                raise RuntimeError("No confirmation button found. Screenshot saved.")
+                # Click "A GUEST"
+                log.info("Clicking A GUEST for partner %d…", partner_num)
+                human_move_and_click(
+                    page,
+                    'button:has-text("A GUEST"), button:has-text("A Guest")'
+                )
+                human_pause(0.8, 1.5)
 
+                # A list of previous guest names appears — pick one at random
+                guest_btns = page.query_selector_all(
+                    '.guest-list button, .guests button, '
+                    'button.guest-name, [class*=guest] button'
+                )
+                # Fallback: any button that isn't a modal action button
+                if not guest_btns:
+                    all_btns = page.query_selector_all("button")
+                    guest_btns = [
+                        b for b in all_btns
+                        if b.inner_text().strip()
+                        and b.inner_text().strip().upper() not in
+                        ("ANOTHER MEMBER", "A GUEST", "CANCEL", "FINISH", "BOOK",
+                         "ADD A NEW GUEST")
+                    ]
+
+                if not guest_btns:
+                    log.warning("No guest list found for partner %d.", partner_num)
+                    break
+
+                pick = random.choice(guest_btns)
+                log.info("Picking guest: %s", pick.inner_text().strip())
+                human_move_and_click_element(page, pick)
+                human_pause(0.8, 1.5)
+
+            # 11. Review the summary screen and click Finish
+            human_pause(1.5, 2.5)
+            page.screenshot(path="/tmp/summary_screen.png")
+            log.info("Summary screen — looking for Finish button…")
+
+            finish_btn = None
+            for sel in [
+                'a:has-text("Finish")',
+                'button:has-text("Finish")',
+                'input[value="Finish"]',
+            ]:
+                finish_btn = page.query_selector(sel)
+                if finish_btn:
+                    break
+
+            if not finish_btn:
+                page.screenshot(path="/tmp/no_finish_btn.png")
+                raise RuntimeError("Could not find Finish button. Screenshot saved.")
+
+            log.info("Clicking Finish…")
+            human_move_and_click_element(page, finish_btn)
+            page.wait_for_load_state("networkidle")
             human_pause(0.5, 1.2)
 
             # 12. Verify success
