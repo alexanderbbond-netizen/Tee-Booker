@@ -196,6 +196,7 @@ def book_tee_time(
     preferred_start: str  = "07:00",
     preferred_end:   str  = "10:00",
     num_players:     int  = 3,
+    dry_run:         bool = False,
 ):
     """
     Log in to Intelligent Golf and book the best available tee time.
@@ -206,6 +207,7 @@ def book_tee_time(
     preferred_start : Earliest acceptable tee time, HH:MM.
     preferred_end   : Latest acceptable tee time, HH:MM.
     num_players     : Number of players (1–4).
+    dry_run         : If True, goes through all steps but stops before confirming.
     """
     if not target_date:
         now = datetime.now(UK_TZ)
@@ -336,6 +338,13 @@ def book_tee_time(
 
             # 10. Review pause
             human_pause(1.2, 2.8)
+
+            # ── DRY RUN: stop here, don't actually confirm ─────────────────
+            if dry_run:
+                log.info("🔍 DRY RUN — stopping before confirmation. "
+                         "Would have booked %s on %s for %d players.",
+                         chosen["time"], target_date, num_players)
+                return True
 
             # 11. Confirm
             human_move_and_click(
