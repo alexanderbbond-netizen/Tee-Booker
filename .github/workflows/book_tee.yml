@@ -1,8 +1,8 @@
 name: Tee Time Booker
 on:
   schedule:
-    - cron: '55 18 * * 6'   # 19:55 UTC every Saturday (BST = UTC+1, so this = 19:55 BST)
-  workflow_dispatch:          # allows manual trigger from GitHub Actions tab
+    - cron: '30 18 * * 6'   # 19:30 BST (UTC+1) every Saturday — gives time to login before 8pm
+  workflow_dispatch:
 
 jobs:
   book:
@@ -32,9 +32,8 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
         run: python scheduler.py
 
-      # Upload any screenshots taken during failure so we can inspect them
       - name: Upload debug screenshots
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: debug-screenshots
