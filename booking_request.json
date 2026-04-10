@@ -1,7 +1,7 @@
 {
     "_instructions": "Set 'enabled' to true and 'target_date' to the date you want to PLAY (any day of week, YYYY-MM-DD). The bot will automatically fire at 20:00 UK time exactly 7 days before that date.",
-    "enabled": true,
-    "target_date": "2026-04-14",
+    "enabled": false,
+    "target_date": "2026-04-18",
     "preferences": {
         "preferred_start": "07:00",
         "preferred_end": "10:00",
