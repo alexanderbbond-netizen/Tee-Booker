@@ -390,7 +390,8 @@ def book_tee_time(
             # Layout: each row has [time][player1][player2][player3][player4]
             # A row is bookable if it has enough empty player slots
             log.info("Scanning for available tee time slots…")
-            page.wait_for_selector("tr", timeout=15_000)
+            # tr elements are already in the DOM — no need to wait
+            human_pause(1.0, 2.0)
 
             all_rows = page.query_selector_all("tr")
             slots = []
