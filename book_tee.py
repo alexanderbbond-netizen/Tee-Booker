@@ -299,55 +299,88 @@ def book_tee_time(
             log.info("Booking page title: %s", page.title())
             log.info("Booking page URL:   %s", page.url)
 
-            # 5. Navigate forward to target date using the → arrow
-            # The page shows a header like "Fri, 10th April" with prev/next arrows
+            # 5. Navigate to target date
+            # Try appending date directly to URL first (most reliable).
+            # Woodbridge IG uses the → arrow on a calendar widget — we click the
+            # right arrow repeatedly until the displayed date header matches.
             log.info("Navigating to target date: %s", target_date)
-            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
-            target_day   = str(target_dt.day)           # "14"
-            target_month = target_dt.strftime("%B")     # "April"
 
-            for nav_attempt in range(14):
-                # Read displayed date from page header
-                header_text = ""
-                for hsel in [".date-header", ".booking-date", "h2", "h3", ".fc-toolbar-title"]:
-                    el = page.query_selector(hsel)
-                    if el:
-                        header_text = el.inner_text().strip()
-                        break
+            # Method A: try direct URL with date parameter
+            date_url = f"{IG_CLUB_URL}/memberbooking/?date={target_date}"
+            log.info("Trying direct date URL: %s", date_url)
+            page.goto(date_url, wait_until="networkidle", timeout=30_000)
+            human_pause(0.8, 1.5)
+            log.info("After date URL — title: %s | url: %s", page.title(), page.url)
+            page.screenshot(path="/tmp/after_date_url.png")
 
-                log.info("Nav attempt %d — header: %s | url: %s",
-                         nav_attempt, header_text, page.url)
+            # Check if the page now shows the right date in a visible header
+            target_dt    = datetime.strptime(target_date, "%Y-%m-%d")
+            target_day   = str(target_dt.day)       # "14"
+            target_month = target_dt.strftime("%B") # "April"
 
-                # Check if we are on the right date
-                if target_day in header_text and target_month in header_text:
-                    log.info("Correct date found.")
-                    break
+            def on_correct_date():
+                """Return True if the booking page is showing the target date."""
+                # Check URL
                 if target_date in page.url:
-                    log.info("Correct date found in URL.")
-                    break
+                    return True
+                # Check visible date text anywhere on page
+                try:
+                    body = page.inner_text("body")
+                    if target_day in body and target_month in body:
+                        return True
+                except Exception:
+                    pass
+                return False
 
-                # Click the next-day arrow
-                next_btn = None
-                for sel in [
-                    'a[title="Next"]', 'button[title="Next"]',
-                    '.next-date', '[aria-label="Next"]',
-                    'a.next', '.nextButton', '[class*=next]',
-                ]:
-                    next_btn = page.query_selector(sel)
-                    if next_btn:
+            if not on_correct_date():
+                # Method B: click the → arrow on the date widget
+                log.info("Date URL didn't work — trying arrow navigation.")
+                page.goto(f"{IG_CLUB_URL}/memberbooking/", wait_until="networkidle")
+                human_pause(0.8, 1.5)
+
+                for nav_attempt in range(14):
+                    if on_correct_date():
+                        log.info("Correct date reached after %d clicks.", nav_attempt)
                         break
 
-                if not next_btn:
-                    page.screenshot(path="/tmp/date_nav_fail.png")
-                    raise RuntimeError("Cannot find next-date button. Screenshot saved.")
+                    log.info("Nav attempt %d — url: %s", nav_attempt, page.url)
 
-                human_move_and_click_element(page, next_btn)
-                page.wait_for_load_state("networkidle")
-                human_pause(0.5, 1.0)
-            else:
-                raise RuntimeError(
-                    f"Could not navigate to {target_date} after 14 forward clicks."
-                )
+                    # The → arrow sits to the right of the date header
+                    # Try several selectors that cover Woodbridge IG's markup
+                    next_btn = None
+                    for sel in [
+                        'a[title="Next day"]',
+                        'button[title="Next day"]',
+                        'a[title="Next"]',
+                        'button[title="Next"]',
+                        '.booking-next',
+                        '[aria-label="Next"]',
+                        'a.next',
+                        # The right arrow → sits after the calendar icon header
+                        'a:has-text("›")',
+                        'a:has-text("→")',
+                        'span.glyphicon-chevron-right',
+                        'i.fa-chevron-right',
+                    ]:
+                        next_btn = page.query_selector(sel)
+                        if next_btn:
+                            log.info("Found next button: %s", sel)
+                            break
+
+                    if not next_btn:
+                        page.screenshot(path="/tmp/date_nav_fail.png")
+                        raise RuntimeError(
+                            "Cannot find next-date arrow button. "
+                            "Screenshot saved to /tmp/date_nav_fail.png"
+                        )
+
+                    human_move_and_click_element(page, next_btn)
+                    page.wait_for_load_state("networkidle")
+                    human_pause(0.5, 1.0)
+                else:
+                    raise RuntimeError(
+                        f"Could not navigate to {target_date} after 14 forward clicks."
+                    )
 
             human_pause(0.8, 1.5)
             page.screenshot(path="/tmp/booking_page.png")
