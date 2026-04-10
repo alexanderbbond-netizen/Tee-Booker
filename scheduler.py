@@ -74,20 +74,60 @@ def main():
         log.error("No target_date set. Run: python request_booking.py on --date YYYY-MM-DD")
         return
 
-    prefs = config.get("preferences", {})
+    prefs          = config.get("preferences", {})
+    preferred_start = prefs.get("preferred_start", "07:00")
+    preferred_end   = prefs.get("preferred_end",   "10:00")
+    num_players     = int(prefs.get("num_players", 3))
+
     log.info("Target date: %s | window: %s–%s | players: %s",
-             target_date,
-             prefs.get("preferred_start", "07:00"),
-             prefs.get("preferred_end",   "10:00"),
-             prefs.get("num_players",     3))
+             target_date, preferred_start, preferred_end, num_players)
+
+    # ── Check release date ────────────────────────────────────────────────────
+    # Tee times open exactly 7 days before the target date at 20:00 UK time.
+    # If today is not that day, exit — the cron will run again next Saturday.
+    today = datetime.now(UK_TZ).date()
+    target_dt    = datetime.strptime(target_date, "%Y-%m-%d").date()
+    days_until   = (target_dt - today).days
+
+    if not test_mode and not dry_run_mode:
+        if days_until > 7:
+            log.info(
+                "Target date is %d days away — release day is not today. "
+                "Exiting. Will try again next Saturday.", days_until
+            )
+            return
+        elif days_until < 7:
+            log.warning(
+                "Target date is only %d days away — release window may have passed. "
+                "Attempting anyway.", days_until
+            )
+        else:
+            log.info("Release day confirmed — target is exactly 7 days away. Running.")
+
+    # ── Randomise target time within window ───────────────────────────────────
+    # Everyone rushes for 07:00. Picking a random slot in the window gives a
+    # better chance of success — less competition for 08:30 than 07:00.
+    import random as _random
+    from datetime import datetime as _dt, timedelta as _td
+    start_m = int(preferred_start[:2]) * 60 + int(preferred_start[3:])
+    end_m   = int(preferred_end[:2])   * 60 + int(preferred_end[3:])
+    # Round to nearest 10-minute tee time interval
+    intervals = list(range(start_m, end_m + 1, 10))
+    target_m  = _random.choice(intervals)
+    target_time = f"{target_m // 60:02d}:{target_m % 60:02d}"
+    log.info(
+        "Randomised target time: %s (chosen from %s–%s window). "
+        "Will book nearest available slot to this time.",
+        target_time, preferred_start, preferred_end
+    )
 
     # book_tee_time handles all waiting internally — just call it
     try:
         success = book_tee_time(
             target_date=target_date,
-            preferred_start=prefs.get("preferred_start", "07:00"),
-            preferred_end=prefs.get("preferred_end",     "10:00"),
-            num_players=int(prefs.get("num_players",     3)),
+            preferred_start=target_time,
+            preferred_end=preferred_end,
+            num_players=num_players,
             dry_run=dry_run_mode,
         )
         if success:
