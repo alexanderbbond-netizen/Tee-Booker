@@ -1,19 +1,15 @@
 """
-Intelligent Golf Tee Time Booking Bot
-======================================
-Automatically books a tee time on intelligentgolf.co.uk.
+Intelligent Golf Tee Time Booking Bot  —  v2
+=============================================
+Speed-first architecture for Woodbridge Golf Club:
 
-Called by scheduler.py with the date and preferences read from
-booking_request.json. Can also be run directly for testing.
+  Phase 1 (before 8pm): Login once, navigate to the target date booking page,
+                         wait silently on the page.
+  Phase 2 (at 8pm):     Refresh the page, immediately grab the first available
+                         Book button in the preferred time window, click it.
+  Phase 3 (after Book): Add 2 guests from previous guest list, click Finish.
 
-Stealth features:
-  - Masks navigator.webdriver flag
-  - Realistic browser fingerprint (viewport, user-agent, locale, timezone)
-  - Human-like random delays between every action
-  - Natural multi-step mouse movement before every click
-  - Randomised typing speed on login form
-  - Decoy hover interactions before selecting the target slot
-  - Visits homepage before /login (not a direct jump)
+Retries re-use the already-open browser session — no re-login.
 """
 
 import os
@@ -37,7 +33,7 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-# ── Config from environment variables ─────────────────────────────────────────
+# ── Config ─────────────────────────────────────────────────────────────────────
 IG_CLUB_URL  = os.environ["IG_CLUB_URL"]
 IG_USERNAME  = os.environ["IG_USERNAME"]
 IG_PASSWORD  = os.environ["IG_PASSWORD"]
@@ -50,7 +46,7 @@ SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
 
 UK_TZ = ZoneInfo("Europe/London")
 
-# ── Realistic browser fingerprints ────────────────────────────────────────────
+# ── Browser fingerprints ───────────────────────────────────────────────────────
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -63,7 +59,6 @@ VIEWPORTS = [
     {"width": 1536, "height": 864},
     {"width": 1366, "height": 768},
 ]
-
 STEALTH_JS = """
 () => {
     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
@@ -78,84 +73,42 @@ STEALTH_JS = """
 }
 """
 
+# ── Timing ─────────────────────────────────────────────────────────────────────
+RELEASE_HOUR   = 20
+RELEASE_MINUTE = 0
+JITTER_MIN     = 1   # seconds after 20:00 to refresh (kept very short for speed)
+JITTER_MAX     = 4
 
-# ── Human-behaviour helpers ────────────────────────────────────────────────────
 
-def human_pause(min_s=0.6, max_s=2.2):
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def human_pause(min_s=0.5, max_s=1.5):
     time.sleep(random.uniform(min_s, max_s))
 
-def micro_pause(min_s=0.08, max_s=0.4):
+def micro_pause(min_s=0.05, max_s=0.2):
     time.sleep(random.uniform(min_s, max_s))
+
+def fast_click(page, selector):
+    """Click as fast as possible — used after 8pm when speed matters."""
+    el = page.query_selector(selector)
+    if el:
+        el.click()
+        return True
+    return False
+
+def fast_click_element(element):
+    element.click()
 
 def human_type(page, selector, text):
-    page.click(selector)
-    micro_pause(0.15, 0.5)
-    for char in text:
-        page.keyboard.type(char)
-        delay = random.uniform(0.08, 0.22)
-        if random.random() < 0.05:
-            delay += random.uniform(0.3, 0.7)
-        time.sleep(delay)
+    page.fill(selector, "")
+    page.fill(selector, text)
 
-def _move_and_click(page, element):
-    box = element.bounding_box()
-    if not box:
-        element.click()
-        return
-    tx = box["x"] + random.uniform(box["width"]  * 0.2, box["width"]  * 0.8)
-    ty = box["y"] + random.uniform(box["height"] * 0.2, box["height"] * 0.8)
-    for _ in range(random.randint(5, 12)):
-        page.mouse.move(tx + random.uniform(-3, 3), ty + random.uniform(-3, 3))
-        time.sleep(random.uniform(0.01, 0.04))
-    page.mouse.move(tx, ty)
-    micro_pause(0.05, 0.15)
-    page.mouse.click(tx, ty)
-
-def human_move_and_click(page, selector):
-    el = page.query_selector(selector)
-    if not el:
-        page.click(selector)
-        return
-    _move_and_click(page, el)
-
-def human_move_and_click_element(page, element):
-    _move_and_click(page, element)
-
-def random_scroll(page):
-    page.mouse.wheel(0, random.randint(80, 300))
-    micro_pause(0.2, 0.6)
-
-
-# ── Stealth browser factory ────────────────────────────────────────────────────
-
-def make_stealth_context(playwright):
-    browser = playwright.chromium.launch(
-        headless=True,
-        args=[
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-        ],
-    )
-    viewport = random.choice(VIEWPORTS)
-    context  = browser.new_context(
-        user_agent=random.choice(USER_AGENTS),
-        viewport=viewport,
-        locale="en-GB",
-        timezone_id="Europe/London",
-        screen={"width": viewport["width"], "height": viewport["height"]},
-        color_scheme="light",
-        extra_http_headers={
-            "Accept-Language": "en-GB,en;q=0.9",
-            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-            "DNT":             "1",
-        },
-    )
-    context.add_init_script(STEALTH_JS)
-    return browser, context
-
-
-# ── Booking helpers ────────────────────────────────────────────────────────────
+def seconds_until_release():
+    now    = datetime.now(UK_TZ)
+    target = now.replace(hour=RELEASE_HOUR, minute=RELEASE_MINUTE,
+                         second=0, microsecond=0)
+    delta  = (target - now).total_seconds()
+    return delta if delta > 0 else 0
 
 def time_in_window(t, start, end):
     return start <= t <= end
@@ -184,12 +137,240 @@ def send_notification(subject, body):
             server.ehlo(); server.starttls()
             server.login(SMTP_USER, SMTP_PASSWORD)
             server.sendmail(SMTP_USER, NOTIFY_EMAIL, msg.as_string())
-        log.info("Notification sent to %s", NOTIFY_EMAIL)
+        log.info("Notification sent.")
     except Exception as exc:
         log.warning("Email failed: %s", exc)
 
+def make_stealth_context(playwright):
+    viewport = random.choice(VIEWPORTS)
+    browser  = playwright.chromium.launch(
+        headless=True,
+        args=["--disable-blink-features=AutomationControlled",
+              "--no-sandbox", "--disable-dev-shm-usage"],
+    )
+    context = browser.new_context(
+        user_agent=random.choice(USER_AGENTS),
+        viewport=viewport,
+        locale="en-GB",
+        timezone_id="Europe/London",
+        screen={"width": viewport["width"], "height": viewport["height"]},
+        color_scheme="light",
+        extra_http_headers={
+            "Accept-Language": "en-GB,en;q=0.9",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "DNT": "1",
+        },
+    )
+    context.add_init_script(STEALTH_JS)
+    return browser, context
 
-# ── Core booking logic ─────────────────────────────────────────────────────────
+
+# ── Phase 1: Login and pre-position ───────────────────────────────────────────
+
+def login_and_preposition(page, target_date):
+    """
+    Log in and navigate to the booking page for target_date.
+    Returns when the page is loaded and ready — bot then waits for 8pm.
+    """
+    # Homepage first (looks natural)
+    log.info("Opening homepage…")
+    page.goto(IG_CLUB_URL, wait_until="networkidle", timeout=30_000)
+    human_pause(1.0, 2.0)
+
+    # Login
+    log.info("Logging in…")
+    page.goto(f"{IG_CLUB_URL}/login.php", wait_until="networkidle", timeout=30_000)
+    human_pause(0.5, 1.0)
+
+    page.wait_for_selector('input[name="memberid"]', timeout=20_000)
+    human_type(page, 'input[name="memberid"]', IG_USERNAME)
+    human_pause(0.3, 0.7)
+
+    passwd_sel = None
+    for sel in ['input[name="passwd"]', 'input[name="password"]', 'input[type="password"]']:
+        if page.query_selector(sel):
+            passwd_sel = sel
+            break
+    if not passwd_sel:
+        raise RuntimeError("Password field not found.")
+    human_type(page, passwd_sel, IG_PASSWORD)
+    human_pause(0.3, 0.6)
+
+    submit = page.query_selector('input[type="submit"], button[type="submit"]')
+    if submit:
+        submit.click()
+    else:
+        page.keyboard.press("Enter")
+    page.wait_for_load_state("networkidle")
+
+    if "login" in page.url.lower():
+        raise RuntimeError("Login failed — check credentials.")
+    log.info("Logged in. URL: %s", page.url)
+
+    # Navigate to the booking page for the target date
+    booking_url = f"{IG_CLUB_URL}/memberbooking/?date={target_date}"
+    log.info("Pre-positioning on booking page: %s", booking_url)
+    page.goto(booking_url, wait_until="networkidle", timeout=30_000)
+    human_pause(0.5, 1.0)
+    log.info("Ready and waiting on: %s | title: %s", page.url, page.title())
+    page.screenshot(path="/tmp/preposition.png")
+
+
+# ── Phase 2: Refresh at 8pm and grab a slot ───────────────────────────────────
+
+def grab_slot(page, target_date, preferred_start, preferred_end, num_players):
+    """
+    Refresh the booking page and immediately click the best available Book button.
+    Returns the chosen time string, or raises if nothing available.
+    """
+    booking_url = f"{IG_CLUB_URL}/memberbooking/?date={target_date}"
+
+    log.info("Refreshing booking page at release time…")
+    page.goto(booking_url, wait_until="networkidle", timeout=15_000)
+    page.screenshot(path="/tmp/after_refresh.png")
+
+    # Scan all rows for Book buttons
+    all_rows = page.query_selector_all("tr")
+    slots = []
+    for row in all_rows:
+        row_text = row.inner_text().strip()
+        time_match = re.search(r"^(\d{2}:\d{2})", row_text)
+        if not time_match:
+            continue
+        t = time_match.group(1)
+
+        book_btn = row.query_selector('button:has-text("Book"), a:has-text("Book")')
+        if not book_btn:
+            continue
+
+        # Check how many slots are free
+        avail_match = re.search(r"(\d+)\s+slots?\s+available", row_text, re.IGNORECASE)
+        if avail_match:
+            empty_slots = int(avail_match.group(1))
+        else:
+            cells  = row.query_selector_all("td")
+            filled = sum(
+                1 for c in cells[1:]
+                if c.inner_text().strip()
+                and "book" not in c.inner_text().strip().lower()
+                and "slot" not in c.inner_text().strip().lower()
+            )
+            empty_slots = max(0, 4 - filled)
+
+        if empty_slots >= num_players:
+            slots.append({"time": t, "book_btn": book_btn, "empty": empty_slots})
+            log.info("  Bookable: %s (%d empty)", t, empty_slots)
+
+    if not slots:
+        page.screenshot(path="/tmp/no_slots.png")
+        raise RuntimeError("No slots available with enough space.")
+
+    chosen = nearest_slot(slots, preferred_start, preferred_end)
+    if not chosen:
+        raise RuntimeError("Could not pick a slot.")
+
+    in_win = time_in_window(chosen["time"], preferred_start, preferred_end)
+    log.info("Chosen: %s (in window: %s) — clicking Book NOW", chosen["time"], in_win)
+
+    # Click immediately — no human delays here, speed is everything
+    fast_click_element(chosen["book_btn"])
+    human_pause(1.5, 2.5)
+    page.screenshot(path="/tmp/after_book_click.png")
+    log.info("Post-Book URL: %s", page.url)
+
+    return chosen["time"], in_win
+
+
+# ── Phase 3: Add guests and finish ────────────────────────────────────────────
+
+def add_guests_and_finish(page, num_players, dry_run=False):
+    """
+    Add (num_players - 1) guests from the previous guest list, then click Finish.
+    """
+    if dry_run:
+        log.info("DRY RUN — skipping guest selection and finish.")
+        return True
+
+    partners_needed = num_players - 1
+    log.info("Adding %d guest(s)…", partners_needed)
+
+    for partner_num in range(1, partners_needed + 1):
+        log.info("--- Partner %d of %d ---", partner_num, partners_needed)
+
+        # Wait for the "Who are you playing with?" modal
+        try:
+            page.wait_for_selector(
+                'button:has-text("A GUEST"), button:has-text("A Guest")',
+                timeout=15_000
+            )
+        except PlaywrightTimeout:
+            page.screenshot(path=f"/tmp/partner_{partner_num}_modal_fail.png")
+            log.warning("Guest modal not found for partner %d — skipping.", partner_num)
+            break
+
+        page.screenshot(path=f"/tmp/partner_{partner_num}_modal.png")
+        log.info("Guest modal visible. Clicking A GUEST…")
+
+        # Click "A GUEST"
+        guest_btn = page.query_selector(
+            'button:has-text("A GUEST"), button:has-text("A Guest")'
+        )
+        if guest_btn:
+            fast_click_element(guest_btn)
+        human_pause(1.0, 1.8)
+        page.screenshot(path=f"/tmp/partner_{partner_num}_guestlist.png")
+
+        # Pick a random previous guest from the list
+        # Exclude modal action buttons by filtering on known labels
+        excluded = {"ANOTHER MEMBER", "A GUEST", "CANCEL", "FINISH", "BOOK",
+                    "ADD A NEW GUEST", "Another Member", "A Guest",
+                    "Cancel", "Finish", "Book", "Add a new guest"}
+        all_btns = page.query_selector_all("button")
+        guest_btns = [
+            b for b in all_btns
+            if b.inner_text().strip() and b.inner_text().strip() not in excluded
+        ]
+
+        if not guest_btns:
+            log.warning("No previous guests found for partner %d.", partner_num)
+            break
+
+        pick = random.choice(guest_btns)
+        log.info("Selected guest: %s", pick.inner_text().strip())
+        fast_click_element(pick)
+        human_pause(1.0, 2.0)
+
+    # Click Finish on the summary screen
+    human_pause(1.0, 2.0)
+    page.screenshot(path="/tmp/summary.png")
+    log.info("Looking for Finish button…")
+
+    finish_btn = None
+    for sel in ['a:has-text("Finish")', 'button:has-text("Finish")',
+                'input[value="Finish"]']:
+        finish_btn = page.query_selector(sel)
+        if finish_btn:
+            break
+
+    if not finish_btn:
+        page.screenshot(path="/tmp/no_finish.png")
+        raise RuntimeError("Finish button not found. Screenshot saved.")
+
+    log.info("Clicking Finish…")
+    fast_click_element(finish_btn)
+    page.wait_for_load_state("networkidle")
+    human_pause(0.5, 1.0)
+
+    content = page.content().lower()
+    page.screenshot(path="/tmp/after_finish.png")
+    if any(w in content for w in ["confirmed", "booked", "booking reference",
+                                   "thank you", "success", "email"]):
+        return True
+    else:
+        raise RuntimeError("Booking confirmation not found after Finish.")
+
+
+# ── Main entry point ───────────────────────────────────────────────────────────
 
 def book_tee_time(
     target_date:     str  = None,
@@ -199,380 +380,76 @@ def book_tee_time(
     dry_run:         bool = False,
 ):
     """
-    Log in to Intelligent Golf and book the best available tee time.
+    Full booking flow:
+      1. Login and navigate to the booking page (before 8pm)
+      2. Wait until 8pm then refresh and grab best slot
+      3. Add guests and click Finish
 
-    Parameters
-    ----------
-    target_date     : Date to book, YYYY-MM-DD. Defaults to next Saturday.
-    preferred_start : Earliest acceptable tee time, HH:MM.
-    preferred_end   : Latest acceptable tee time, HH:MM.
-    num_players     : Number of players (1–4).
-    dry_run         : If True, goes through all steps but stops before confirming.
+    On retry, the browser session is reused — no re-login.
+    Pass an already-open (page, browser) tuple via _session to reuse.
     """
     if not target_date:
         now = datetime.now(UK_TZ)
         days_ahead  = (5 - now.weekday()) % 7 or 7
         target_date = (now + timedelta(days=days_ahead)).strftime("%Y-%m-%d")
 
-    log.info("Targeting: %s  |  window: %s–%s  |  players: %d",
-             target_date, preferred_start, preferred_end, num_players)
+    log.info("Target: %s | window: %s–%s | players: %d | dry_run: %s",
+             target_date, preferred_start, preferred_end, num_players, dry_run)
 
     with sync_playwright() as p:
         browser, context = make_stealth_context(p)
         page = context.new_page()
 
         try:
-            # 1. Homepage first
-            log.info("Opening club homepage…")
-            page.goto(IG_CLUB_URL, wait_until="networkidle")
-            human_pause(1.2, 2.8)
-            random_scroll(page)
-            human_pause(0.6, 1.4)
+            # ── Phase 1: Login and pre-position ───────────────────────────────
+            login_and_preposition(page, target_date)
 
-            # 2. Login page
-            log.info("Going to login page…")
-            page.goto(f"{IG_CLUB_URL}/login.php", wait_until="networkidle", timeout=60_000)
-            human_pause(0.8, 1.8)
+            # ── Wait until 8pm ────────────────────────────────────────────────
+            wait = seconds_until_release()
+            if wait > 0:
+                log.info("Waiting %.1fs until 20:00 UK time…", wait)
+                while wait > 5:
+                    time.sleep(5)
+                    wait = seconds_until_release()
+                time.sleep(wait)
 
-            # Log what loaded so we can debug in CI
-            log.info("Login page title: %s", page.title())
-            log.info("Login page URL:   %s", page.url)
+            jitter = random.uniform(JITTER_MIN, JITTER_MAX)
+            log.info("20:00 reached. Jitter: %.1fs", jitter)
+            time.sleep(jitter)
 
-            # Wait explicitly for the memberid field
-            try:
-                page.wait_for_selector('input[name="memberid"]', timeout=30_000)
-            except PlaywrightTimeout:
-                page.screenshot(path="/tmp/login_page.png")
-                raise RuntimeError(
-                    f"Login form not found at {page.url} (title: {page.title()}) — "
-                    "the site may be blocking headless browsers or the URL is wrong."
-                )
-
-            # 3. Type credentials
-            # Intelligent Golf uses name="memberid" and name="passwd"
-            log.info("Entering credentials…")
-
-            # Clear and fill memberid reliably
-            page.fill('input[name="memberid"]', "")
-            page.fill('input[name="memberid"]', IG_USERNAME)
-            log.info("Filled memberid field.")
-            human_pause(0.5, 1.2)
-
-            # Find password field — try known IG field names
-            passwd_selector = None
-            for sel in ['input[name="passwd"]', 'input[name="password"]', 'input[type="password"]']:
-                if page.query_selector(sel):
-                    passwd_selector = sel
-                    log.info("Found password field: %s", sel)
-                    break
-            if not passwd_selector:
-                raise RuntimeError("Could not find password field on login page.")
-
-            page.fill(passwd_selector, "")
-            page.fill(passwd_selector, IG_PASSWORD)
-            log.info("Filled password field.")
-            human_pause(0.6, 1.4)
-
-            # Submit — try clicking submit button, fall back to Enter key
-            submit = page.query_selector('input[type="submit"], button[type="submit"]')
-            if submit:
-                log.info("Clicking submit button.")
-                submit.click()
-            else:
-                log.info("No submit button found — pressing Enter.")
-                page.keyboard.press("Enter")
-            page.wait_for_load_state("networkidle")
-
-            log.info("Post-login URL: %s", page.url)
-            log.info("Post-login title: %s", page.title())
-            if "login" in page.url.lower():
-                raise RuntimeError("Login failed – check IG_USERNAME / IG_PASSWORD.")
-            log.info("Logged in successfully.")
-            human_pause(1.0, 2.2)
-
-
-            # 4. Navigate to member booking page
-            human_pause(0.8, 1.5)
-            log.info("Navigating to member booking page…")
-            page.goto(f"{IG_CLUB_URL}/memberbooking/", wait_until="networkidle", timeout=30_000)
-            human_pause(1.0, 2.0)
-            log.info("Booking page title: %s", page.title())
-            log.info("Booking page URL:   %s", page.url)
-
-            # 5. Navigate to target date
-            # Try appending date directly to URL first (most reliable).
-            # Woodbridge IG uses the → arrow on a calendar widget — we click the
-            # right arrow repeatedly until the displayed date header matches.
-            log.info("Navigating to target date: %s", target_date)
-
-            # Method A: try direct URL with date parameter
-            date_url = f"{IG_CLUB_URL}/memberbooking/?date={target_date}"
-            log.info("Trying direct date URL: %s", date_url)
-            page.goto(date_url, wait_until="networkidle", timeout=30_000)
-            human_pause(0.8, 1.5)
-            log.info("After date URL — title: %s | url: %s", page.title(), page.url)
-            page.screenshot(path="/tmp/after_date_url.png")
-
-            # Check if the page now shows the right date in a visible header
-            target_dt    = datetime.strptime(target_date, "%Y-%m-%d")
-            target_day   = str(target_dt.day)       # "14"
-            target_month = target_dt.strftime("%B") # "April"
-
-            def on_correct_date():
-                """Return True if the booking page is showing the target date."""
-                # Check URL
-                if target_date in page.url:
-                    return True
-                # Check visible date text anywhere on page
+            # ── Phase 2: Refresh and grab slot ────────────────────────────────
+            chosen_time = None
+            for attempt in range(1, 6):
+                log.info("Grab attempt %d/5…", attempt)
                 try:
-                    body = page.inner_text("body")
-                    if target_day in body and target_month in body:
-                        return True
-                except Exception:
-                    pass
-                return False
-
-            if not on_correct_date():
-                # Method B: click the → arrow on the date widget
-                log.info("Date URL didn't work — trying arrow navigation.")
-                page.goto(f"{IG_CLUB_URL}/memberbooking/", wait_until="networkidle")
-                human_pause(0.8, 1.5)
-
-                for nav_attempt in range(14):
-                    if on_correct_date():
-                        log.info("Correct date reached after %d clicks.", nav_attempt)
-                        break
-
-                    log.info("Nav attempt %d — url: %s", nav_attempt, page.url)
-
-                    # The → arrow sits to the right of the date header
-                    # Try several selectors that cover Woodbridge IG's markup
-                    next_btn = None
-                    for sel in [
-                        'a[title="Next day"]',
-                        'button[title="Next day"]',
-                        'a[title="Next"]',
-                        'button[title="Next"]',
-                        '.booking-next',
-                        '[aria-label="Next"]',
-                        'a.next',
-                        # The right arrow → sits after the calendar icon header
-                        'a:has-text("›")',
-                        'a:has-text("→")',
-                        'span.glyphicon-chevron-right',
-                        'i.fa-chevron-right',
-                    ]:
-                        next_btn = page.query_selector(sel)
-                        if next_btn:
-                            log.info("Found next button: %s", sel)
-                            break
-
-                    if not next_btn:
-                        page.screenshot(path="/tmp/date_nav_fail.png")
-                        raise RuntimeError(
-                            "Cannot find next-date arrow button. "
-                            "Screenshot saved to /tmp/date_nav_fail.png"
-                        )
-
-                    human_move_and_click_element(page, next_btn)
-                    page.wait_for_load_state("networkidle")
-                    human_pause(0.5, 1.0)
-                else:
-                    raise RuntimeError(
-                        f"Could not navigate to {target_date} after 14 forward clicks."
+                    chosen_time, in_win = grab_slot(
+                        page, target_date, preferred_start, preferred_end, num_players
                     )
-
-            human_pause(0.8, 1.5)
-            page.screenshot(path="/tmp/booking_page.png")
-            log.info("Screenshot of booking page saved.")
-
-            # 6. Find available tee time rows
-            # The booking page shows rows with a green "Book" button when slots are free.
-            # Rows showing "4 slots available" are fully empty.
-            # We only pick rows with enough space for our whole group.
-            log.info("Scanning for available tee time slots…")
-            human_pause(1.0, 2.0)
-
-            all_rows = page.query_selector_all("tr")
-            slots = []
-            for row in all_rows:
-                row_text = row.inner_text().strip()
-
-                # Must start with a time like "07:20"
-                time_match = re.search(r"^(\d{2}:\d{2})", row_text)
-                if not time_match:
-                    continue
-                t = time_match.group(1)
-
-                # Only consider rows that have a green "Book" button
-                book_btn = row.query_selector('button:has-text("Book"), a:has-text("Book")')
-                if not book_btn:
-                    continue
-
-                # Count empty slots:
-                # "4 slots available" = 4 empty, "3 slots available" = 3, etc.
-                avail_match = re.search(r"(\d+)\s+slots?\s+available", row_text, re.IGNORECASE)
-                if avail_match:
-                    empty_slots = int(avail_match.group(1))
-                else:
-                    # Row has some players but still has a Book button — count filled cells
-                    cells = row.query_selector_all("td")
-                    filled = sum(
-                        1 for c in cells[1:]
-                        if c.inner_text().strip()
-                        and "book" not in c.inner_text().strip().lower()
-                        and "slot" not in c.inner_text().strip().lower()
-                    )
-                    empty_slots = max(0, 4 - filled)
-
-                if empty_slots >= num_players:
-                    slots.append({
-                        "time": t,
-                        "element": row,
-                        "book_btn": book_btn,
-                        "empty": empty_slots,
-                    })
-                    log.info("  Available: %s (%d empty slots)", t, empty_slots)
-
-            if not slots:
-                page.screenshot(path="/tmp/no_slots.png")
-                raise RuntimeError(
-                    f"No slots found with {num_players}+ spaces. Screenshot saved."
-                )
-            log.info("Found %d bookable slots.", len(slots))
-
-            # 7. Pick best slot
-            chosen = nearest_slot(slots, preferred_start, preferred_end)
-            if not chosen:
-                raise RuntimeError("Could not determine a slot to book.")
-
-            in_win = time_in_window(chosen["time"], preferred_start, preferred_end)
-            log.info("Chosen: %s  (in preferred window: %s)", chosen["time"], in_win)
-
-            # Hover over a couple of other slots first (human behaviour)
-            decoys = [s for s in slots if s is not chosen]
-            for d in random.sample(decoys, k=min(2, len(decoys))):
-                box = d["element"].bounding_box()
-                if box:
-                    page.mouse.move(
-                        box["x"] + box["width"] / 2,
-                        box["y"] + box["height"] / 2,
-                    )
-                    micro_pause(0.2, 0.5)
-            human_pause(0.5, 1.0)
-
-            # 8. Click the green "Book" button on the chosen row
-            log.info("Clicking Book button for: %s", chosen["time"])
-            human_move_and_click_element(page, chosen["book_btn"])
-            human_pause(1.0, 2.0)
-            page.screenshot(path="/tmp/after_book_click.png")
-            log.info("Post-Book-click URL: %s", page.url)
-
-            # 9. DRY RUN — stop before adding players
-            if dry_run:
-                log.info("🔍 DRY RUN — stopping before player selection. "
-                         "Would have booked %s on %s for %d players.",
-                         chosen["time"], target_date, num_players)
-                return True
-
-            # 10. Add playing partners
-            # After clicking Book, a modal appears: "Who are you playing with?"
-            # with buttons "ANOTHER MEMBER" and "A GUEST".
-            # We need to add (num_players - 1) partners (player 1 is us).
-            # Strategy: click "ANOTHER MEMBER", pick a random name from the list,
-            # repeat for each additional player.
-            log.info("Adding %d playing partner(s)…", num_players - 1)
-
-            for partner_num in range(1, num_players):
-                human_pause(0.8, 1.5)
-                page.screenshot(path=f"/tmp/partner_{partner_num}_modal.png")
-
-                # Wait for the "Who are you playing with?" modal
-                try:
-                    page.wait_for_selector(
-                        'button:has-text("A GUEST"), button:has-text("A Guest")',
-                        timeout=10_000
-                    )
-                except PlaywrightTimeout:
-                    log.warning("Partner modal not visible for partner %d — skipping.", partner_num)
                     break
+                except Exception as exc:
+                    log.warning("Grab attempt %d failed: %s", attempt, exc)
+                    if attempt < 5:
+                        time.sleep(random.uniform(2, 4))
+                    else:
+                        raise
 
-                # Click "A GUEST"
-                log.info("Clicking A GUEST for partner %d…", partner_num)
-                human_move_and_click(
-                    page,
-                    'button:has-text("A GUEST"), button:has-text("A Guest")'
-                )
-                human_pause(0.8, 1.5)
+            if not chosen_time:
+                raise RuntimeError("Could not grab any slot.")
 
-                # A list of previous guest names appears — pick one at random
-                guest_btns = page.query_selector_all(
-                    '.guest-list button, .guests button, '
-                    'button.guest-name, [class*=guest] button'
-                )
-                # Fallback: any button that isn't a modal action button
-                if not guest_btns:
-                    all_btns = page.query_selector_all("button")
-                    guest_btns = [
-                        b for b in all_btns
-                        if b.inner_text().strip()
-                        and b.inner_text().strip().upper() not in
-                        ("ANOTHER MEMBER", "A GUEST", "CANCEL", "FINISH", "BOOK",
-                         "ADD A NEW GUEST")
-                    ]
+            # ── Phase 3: Add guests and finish ────────────────────────────────
+            success = add_guests_and_finish(page, num_players, dry_run=dry_run)
 
-                if not guest_btns:
-                    log.warning("No guest list found for partner %d.", partner_num)
-                    break
-
-                pick = random.choice(guest_btns)
-                log.info("Picking guest: %s", pick.inner_text().strip())
-                human_move_and_click_element(page, pick)
-                human_pause(0.8, 1.5)
-
-            # 11. Review the summary screen and click Finish
-            human_pause(1.5, 2.5)
-            page.screenshot(path="/tmp/summary_screen.png")
-            log.info("Summary screen — looking for Finish button…")
-
-            finish_btn = None
-            for sel in [
-                'a:has-text("Finish")',
-                'button:has-text("Finish")',
-                'input[value="Finish"]',
-            ]:
-                finish_btn = page.query_selector(sel)
-                if finish_btn:
-                    break
-
-            if not finish_btn:
-                page.screenshot(path="/tmp/no_finish_btn.png")
-                raise RuntimeError("Could not find Finish button. Screenshot saved.")
-
-            log.info("Clicking Finish…")
-            human_move_and_click_element(page, finish_btn)
-            page.wait_for_load_state("networkidle")
-            human_pause(0.5, 1.2)
-
-            # 12. Verify success
-            content = page.content().lower()
-            page.screenshot(path="/tmp/after_confirm.png")
-            if any(w in content for w in
-                   ["confirmed", "booked", "booking reference", "thank you", "success"]):
+            if success:
                 msg = (f"✅ Tee time BOOKED!\n"
                        f"Date:    {target_date}\n"
-                       f"Time:    {chosen['time']}\n"
+                       f"Time:    {chosen_time}\n"
                        f"Players: {num_players}\n"
                        f"In preferred window: {in_win}")
                 log.info(msg)
                 send_notification(
-                    f"⛳ Tee time booked – {chosen['time']} on {target_date}", msg
+                    f"⛳ Tee time booked – {chosen_time} on {target_date}", msg
                 )
                 return True
-            else:
-                raise RuntimeError(
-                    "Confirmation text not found. Check /tmp/after_confirm.png"
-                )
 
         except Exception as exc:
             log.error("Booking failed: %s", exc)
@@ -584,8 +461,6 @@ def book_tee_time(
         finally:
             browser.close()
 
-
-# ── Entry point (for manual testing) ──────────────────────────────────────────
 
 if __name__ == "__main__":
     book_tee_time()
