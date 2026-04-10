@@ -290,52 +290,99 @@ def book_tee_time(
             log.info("Logged in successfully.")
             human_pause(1.0, 2.2)
 
-            # 4. Tee booking page
-            random_scroll(page)
-            human_pause(0.5, 1.0)
-            page.goto(f"{IG_CLUB_URL}/tee-booking.php", wait_until="networkidle")
-            human_pause(1.0, 2.2)
 
-            # 5. Select date
-            date_selector = f'[data-date="{target_date}"], td[data-date="{target_date}"]'
-            try:
-                page.wait_for_selector(date_selector, timeout=10_000)
+            # 4. Navigate to member booking page
+            human_pause(0.8, 1.5)
+            log.info("Navigating to member booking page…")
+            page.goto(f"{IG_CLUB_URL}/memberbooking/", wait_until="networkidle", timeout=30_000)
+            human_pause(1.0, 2.0)
+            log.info("Booking page title: %s", page.title())
+            log.info("Booking page URL:   %s", page.url)
+
+            # 5. Navigate forward to target date using the → arrow
+            # The page shows a header like "Fri, 10th April" with prev/next arrows
+            log.info("Navigating to target date: %s", target_date)
+            target_dt = datetime.strptime(target_date, "%Y-%m-%d")
+            target_day   = str(target_dt.day)           # "14"
+            target_month = target_dt.strftime("%B")     # "April"
+
+            for nav_attempt in range(14):
+                # Read displayed date from page header
+                header_text = ""
+                for hsel in [".date-header", ".booking-date", "h2", "h3", ".fc-toolbar-title"]:
+                    el = page.query_selector(hsel)
+                    if el:
+                        header_text = el.inner_text().strip()
+                        break
+
+                log.info("Nav attempt %d — header: %s | url: %s",
+                         nav_attempt, header_text, page.url)
+
+                # Check if we are on the right date
+                if target_day in header_text and target_month in header_text:
+                    log.info("Correct date found.")
+                    break
+                if target_date in page.url:
+                    log.info("Correct date found in URL.")
+                    break
+
+                # Click the next-day arrow
+                next_btn = None
+                for sel in [
+                    'a[title="Next"]', 'button[title="Next"]',
+                    '.next-date', '[aria-label="Next"]',
+                    'a.next', '.nextButton', '[class*=next]',
+                ]:
+                    next_btn = page.query_selector(sel)
+                    if next_btn:
+                        break
+
+                if not next_btn:
+                    page.screenshot(path="/tmp/date_nav_fail.png")
+                    raise RuntimeError("Cannot find next-date button. Screenshot saved.")
+
+                human_move_and_click_element(page, next_btn)
+                page.wait_for_load_state("networkidle")
                 human_pause(0.5, 1.0)
-                human_move_and_click(page, date_selector)
-                page.wait_for_load_state("networkidle")
-                log.info("Selected date: %s", target_date)
-            except PlaywrightTimeout:
-                log.warning("Date cell not found – trying calendar navigation.")
-                human_move_and_click(page, 'a.next, button.fc-next-button, [aria-label="next"]')
-                page.wait_for_load_state("networkidle")
-                human_pause(0.5, 1.2)
-                human_move_and_click(page, date_selector)
-                page.wait_for_load_state("networkidle")
+            else:
+                raise RuntimeError(
+                    f"Could not navigate to {target_date} after 14 forward clicks."
+                )
 
-            human_pause(0.8, 1.8)
-            random_scroll(page)
-            human_pause(0.5, 1.2)
+            human_pause(0.8, 1.5)
+            page.screenshot(path="/tmp/booking_page.png")
+            log.info("Screenshot of booking page saved.")
 
-            # 6. Scrape available slots
-            page.wait_for_selector(
-                ".tee-time, .teetime, [class*='tee'], .booking-slot", timeout=15_000
-            )
-            slot_elements = page.query_selector_all(
-                ".tee-time, .teetime, [class*='tee-time'], .booking-slot"
-            )
+            # 6. Find available tee time rows
+            # Layout: each row has [time][player1][player2][player3][player4]
+            # A row is bookable if it has enough empty player slots
+            log.info("Scanning for available tee time slots…")
+            page.wait_for_selector("tr", timeout=15_000)
+
+            all_rows = page.query_selector_all("tr")
             slots = []
-            for el in slot_elements:
-                match = re.search(r"\b(\d{1,2}:\d{2})\b", el.inner_text().strip())
-                if match:
-                    t       = match.group(1).zfill(5)
-                    classes = el.get_attribute("class") or ""
-                    if any(x in classes.lower() for x in ["full", "booked", "closed", "disabled"]):
-                        continue
-                    slots.append({"time": t, "element": el})
+            for row in all_rows:
+                row_text = row.inner_text().strip()
+                time_match = re.search(r"^(\d{2}:\d{2})", row_text)
+                if not time_match:
+                    continue
+                t = time_match.group(1)
+
+                # Count filled player cells (non-empty td after the time cell)
+                cells = row.query_selector_all("td")
+                player_cells  = [c for c in cells[1:] if c.inner_text().strip()]
+                empty_slots   = max(0, 4 - len(player_cells))
+
+                if empty_slots >= num_players:
+                    slots.append({"time": t, "element": row, "empty": empty_slots})
+                    log.info("  Available: %s (%d empty slots)", t, empty_slots)
 
             if not slots:
-                raise RuntimeError("No available slots found on the page.")
-            log.info("Found %d available slots.", len(slots))
+                page.screenshot(path="/tmp/no_slots.png")
+                raise RuntimeError(
+                    f"No slots found with {num_players}+ spaces. Screenshot saved."
+                )
+            log.info("Found %d bookable slots.", len(slots))
 
             # 7. Pick best slot
             chosen = nearest_slot(slots, preferred_start, preferred_end)
@@ -343,74 +390,81 @@ def book_tee_time(
                 raise RuntimeError("Could not determine a slot to book.")
 
             in_win = time_in_window(chosen["time"], preferred_start, preferred_end)
-            log.info("Chosen: %s  (in window: %s)", chosen["time"], in_win)
+            log.info("Chosen: %s  (in preferred window: %s)", chosen["time"], in_win)
 
-            # Hover over 1–2 decoy slots first
-            for d in random.sample([s for s in slots if s is not chosen],
-                                   k=min(2, len(slots) - 1)):
+            # Hover over a couple of other slots first (human behaviour)
+            decoys = [s for s in slots if s is not chosen]
+            for d in random.sample(decoys, k=min(2, len(decoys))):
                 box = d["element"].bounding_box()
                 if box:
-                    page.mouse.move(box["x"] + box["width"]/2, box["y"] + box["height"]/2)
-                    micro_pause(0.15, 0.45)
-            human_pause(0.4, 1.0)
+                    page.mouse.move(
+                        box["x"] + box["width"] / 2,
+                        box["y"] + box["height"] / 2,
+                    )
+                    micro_pause(0.2, 0.5)
+            human_pause(0.5, 1.0)
 
-            # 8. Click slot
+            # 8. Click the tee time row to open the booking form
+            log.info("Clicking tee time row: %s", chosen["time"])
             human_move_and_click_element(page, chosen["element"])
             page.wait_for_load_state("networkidle")
-            human_pause(0.8, 1.6)
+            human_pause(0.8, 1.5)
+            log.info("Post-click URL: %s", page.url)
+            page.screenshot(path="/tmp/after_slot_click.png")
 
-            # 9. Set players
-            try:
-                page.select_option(
-                    'select[name="players"], select[name="numberOfPlayers"], select[id*="player"]',
-                    str(num_players)
-                )
-                human_pause(0.5, 1.0)
-            except Exception:
-                try:
-                    human_move_and_click(
-                        page,
-                        f'[data-players="{num_players}"], '
-                        f'input[value="{num_players}"][name*="player"]'
-                    )
-                    human_pause(0.5, 1.0)
-                except Exception:
-                    log.warning("Could not set player count – using site default.")
-
-            # 10. Review pause
-            human_pause(1.2, 2.8)
-
-            # ── DRY RUN: stop here, don't actually confirm ─────────────────
+            # 9. DRY RUN — stop before confirming
             if dry_run:
                 log.info("🔍 DRY RUN — stopping before confirmation. "
                          "Would have booked %s on %s for %d players.",
                          chosen["time"], target_date, num_players)
                 return True
 
-            # 11. Confirm
-            human_move_and_click(
-                page,
-                'button[type="submit"], input[type="submit"], '
-                'a.confirm-booking, button:has-text("Confirm"), button:has-text("Book")'
-            )
-            page.wait_for_load_state("networkidle")
+            # 10. Review pause (human reads the confirmation screen)
+            human_pause(1.5, 3.0)
+
+            # 11. Confirm the booking
+            confirmed = False
+            for confirm_sel in [
+                'button:has-text("Confirm")',
+                'button:has-text("Book")',
+                'input[value="Confirm"]',
+                'input[value="Book"]',
+                'button[type="submit"]',
+                'input[type="submit"]',
+                'a:has-text("Confirm")',
+            ]:
+                btn = page.query_selector(confirm_sel)
+                if btn:
+                    log.info("Clicking confirm: %s", confirm_sel)
+                    human_move_and_click_element(page, btn)
+                    page.wait_for_load_state("networkidle")
+                    confirmed = True
+                    break
+
+            if not confirmed:
+                page.screenshot(path="/tmp/no_confirm_btn.png")
+                raise RuntimeError("No confirmation button found. Screenshot saved.")
+
             human_pause(0.5, 1.2)
 
-            # 12. Verify
+            # 12. Verify success
             content = page.content().lower()
-            if any(w in content for w in ["confirmed", "booked", "booking reference", "thank you"]):
+            page.screenshot(path="/tmp/after_confirm.png")
+            if any(w in content for w in
+                   ["confirmed", "booked", "booking reference", "thank you", "success"]):
                 msg = (f"✅ Tee time BOOKED!\n"
                        f"Date:    {target_date}\n"
                        f"Time:    {chosen['time']}\n"
                        f"Players: {num_players}\n"
                        f"In preferred window: {in_win}")
                 log.info(msg)
-                send_notification(f"⛳ Tee time booked – {chosen['time']} on {target_date}", msg)
+                send_notification(
+                    f"⛳ Tee time booked – {chosen['time']} on {target_date}", msg
+                )
                 return True
             else:
-                page.screenshot(path="/tmp/booking_failed.png")
                 raise RuntimeError(
-                    "Confirmation text not found. Screenshot: /tmp/booking_failed.png"
+                    "Confirmation text not found. Check /tmp/after_confirm.png"
                 )
 
         except Exception as exc:
