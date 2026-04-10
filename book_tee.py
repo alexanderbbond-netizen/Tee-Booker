@@ -251,17 +251,43 @@ def book_tee_time(
             # 3. Type credentials
             # Intelligent Golf uses name="memberid" and name="passwd"
             log.info("Entering credentials…")
-            human_type(page, 'input[name="memberid"]', IG_USERNAME)
+
+            # Clear and fill memberid reliably
+            page.fill('input[name="memberid"]', "")
+            page.fill('input[name="memberid"]', IG_USERNAME)
+            log.info("Filled memberid field.")
             human_pause(0.5, 1.2)
-            human_type(page, 'input[name="passwd"], input[name="password"], input[type="password"]', IG_PASSWORD)
+
+            # Find password field — try known IG field names
+            passwd_selector = None
+            for sel in ['input[name="passwd"]', 'input[name="password"]', 'input[type="password"]']:
+                if page.query_selector(sel):
+                    passwd_selector = sel
+                    log.info("Found password field: %s", sel)
+                    break
+            if not passwd_selector:
+                raise RuntimeError("Could not find password field on login page.")
+
+            page.fill(passwd_selector, "")
+            page.fill(passwd_selector, IG_PASSWORD)
+            log.info("Filled password field.")
             human_pause(0.6, 1.4)
-            human_move_and_click(page, 'input[type="submit"], button[type="submit"]')
+
+            # Submit — try clicking submit button, fall back to Enter key
+            submit = page.query_selector('input[type="submit"], button[type="submit"]')
+            if submit:
+                log.info("Clicking submit button.")
+                submit.click()
+            else:
+                log.info("No submit button found — pressing Enter.")
+                page.keyboard.press("Enter")
             page.wait_for_load_state("networkidle")
 
             log.info("Post-login URL: %s", page.url)
+            log.info("Post-login title: %s", page.title())
             if "login" in page.url.lower():
                 raise RuntimeError("Login failed – check IG_USERNAME / IG_PASSWORD.")
-            log.info("Logged in.")
+            log.info("Logged in successfully.")
             human_pause(1.0, 2.2)
 
             # 4. Tee booking page
