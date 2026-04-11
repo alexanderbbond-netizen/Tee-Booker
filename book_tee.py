@@ -286,45 +286,55 @@ def grab_slot(page, target_date, preferred_start, preferred_end, num_players):
     human_pause(1.0, 1.5)
     page.screenshot(path="/tmp/popup_check.png")
 
-    popup_handled = page.evaluate(f"""
-        (numPlayers) => {{
+    # Step 1: check if popup is present
+    popup_present = page.evaluate("""
+        () => {
             const allBtns = Array.from(document.querySelectorAll('button'));
+            return !!allBtns.find(b => b.textContent.trim().startsWith('Book teetime'));
+        }
+    """)
 
-            // Check if popup is present by looking for "Book teetime" button
-            const confirmBtn = allBtns.find(b => b.textContent.trim().startsWith('Book teetime'));
-            if (!confirmBtn) return 'no_popup';
+    if popup_present:
+        log.info("Players/Length popup detected.")
 
-            // Click the exact player count button
-            const playerBtn = allBtns.find(b => b.textContent.trim() === String(numPlayers));
-            if (playerBtn) playerBtn.click();
+        # Step 2: click correct player count (wait for UI to update between clicks)
+        player_clicked = page.evaluate(f"""
+            (numPlayers) => {{
+                const allBtns = Array.from(document.querySelectorAll('button'));
+                const playerBtn = allBtns.find(b => b.textContent.trim() === String(numPlayers));
+                if (playerBtn) {{ playerBtn.click(); return true; }}
+                return false;
+            }}
+        """, num_players)
+        log.info("Player count %d clicked: %s", num_players, player_clicked)
+        human_pause(0.8, 1.2)  # wait for UI to update
 
-            // Click 18 holes
-            const holesBtn = allBtns.find(b => b.textContent.trim() === '18 holes');
-            if (holesBtn) holesBtn.click();
+        # Step 3: click 18 holes
+        holes_clicked = page.evaluate("""
+            () => {
+                const allBtns = Array.from(document.querySelectorAll('button'));
+                const holesBtn = allBtns.find(b => b.textContent.trim() === '18 holes');
+                if (holesBtn) { holesBtn.click(); return true; }
+                return false;
+            }
+        """)
+        log.info("18 holes clicked: %s", holes_clicked)
+        human_pause(0.8, 1.2)  # wait for UI to update
 
-            // Small delay then click confirm
-            return new Promise(resolve => {{
-                setTimeout(() => {{
-                    const confirm = Array.from(document.querySelectorAll('button'))
-                        .find(b => b.textContent.trim().startsWith('Book teetime'));
-                    if (confirm) {{
-                        confirm.click();
-                        resolve('confirmed');
-                    }} else {{
-                        resolve('confirm_not_found');
-                    }}
-                }}, 600);
-            }});
-        }}
-    """, num_players)
-
-    log.info("Popup JS result: %s", popup_handled)
-    if popup_handled and popup_handled != 'no_popup':
-        log.info("Popup handled — waiting for confirmation page to load...")
+        # Step 4: now click confirm — separately after pauses
+        confirmed = page.evaluate("""
+            () => {
+                const allBtns = Array.from(document.querySelectorAll('button'));
+                const confirmBtn = allBtns.find(b => b.textContent.trim().startsWith('Book teetime'));
+                if (confirmBtn) { confirmBtn.click(); return true; }
+                return false;
+            }
+        """)
+        log.info("Popup confirm clicked: %s", confirmed)
         human_pause(3.0, 4.0)
         page.screenshot(path="/tmp/after_popup_confirm.png")
     else:
-        log.info("No popup found — continuing directly to guest selection.")
+        log.info("No popup found — continuing.")
 
     return chosen["time"], in_win
 
@@ -356,16 +366,33 @@ def add_guests_and_finish(page, num_players, dry_run=False):
 
     for partner_num in range(1, partners_needed + 1):
         log.info("--- Partner %d of %d ---", partner_num, partners_needed)
+        page.screenshot(path=f"/tmp/partner_{partner_num}_before.png")
 
-        # Wait for the "Who are you playing with?" modal
+        # The summary page shows "Enter Details" links for each empty player slot.
+        # Clicking one opens the "Who are you playing with?" modal.
+        try:
+            enter_details = page.wait_for_selector(
+                'a:has-text("Enter Details"), span:has-text("Enter Details")',
+                timeout=10_000
+            )
+        except PlaywrightTimeout:
+            page.screenshot(path=f"/tmp/partner_{partner_num}_no_enter_details.png")
+            log.warning("No 'Enter Details' link found for partner %d.", partner_num)
+            break
+
+        log.info("Clicking 'Enter Details' for partner %d...", partner_num)
+        fast_click_element(enter_details)
+        human_pause(1.0, 1.5)
+
+        # Now wait for the "Who are you playing with?" modal
         try:
             page.wait_for_selector(
                 'button:has-text("A GUEST"), button:has-text("A Guest")',
-                timeout=15_000
+                timeout=10_000
             )
         except PlaywrightTimeout:
             page.screenshot(path=f"/tmp/partner_{partner_num}_modal_fail.png")
-            log.warning("Guest modal not found for partner %d -- skipping.", partner_num)
+            log.warning("Guest modal not found for partner %d.", partner_num)
             break
 
         page.screenshot(path=f"/tmp/partner_{partner_num}_modal.png")
@@ -376,11 +403,10 @@ def add_guests_and_finish(page, num_players, dry_run=False):
         )
         if guest_modal_btn:
             fast_click_element(guest_modal_btn)
-        human_pause(1.0, 1.8)
+        human_pause(1.0, 1.5)
         page.screenshot(path=f"/tmp/partner_{partner_num}_guestlist.png")
 
         # Pick a random name from the guest list
-        # The list appears as plain buttons — exclude known action button labels
         all_btns = page.query_selector_all("button")
         guest_btns = [
             b for b in all_btns
