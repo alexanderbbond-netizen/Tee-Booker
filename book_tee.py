@@ -278,57 +278,53 @@ def grab_slot(page, target_date, preferred_start, preferred_end, num_players):
     page.screenshot(path="/tmp/after_book_click.png")
     log.info("Post-Book URL: %s", page.url)
 
-    # After clicking Book, a Players/Length popup appears:
+    # After clicking Book, a floating popup appears:
     #   Players: [1] [2] [3] [4]
     #   Length:  [9 holes] [18 holes]
     #   [Book teetime at HH:MM]
-    # Must select correct player count, confirm 18 holes, then click confirm.
-    try:
-        page.wait_for_selector('button:has-text("Book teetime")', timeout=8_000)
-        log.info("Players/Length popup detected.")
-        page.screenshot(path="/tmp/popup_detected.png")
+    # Use pure JS to interact — more reliable than Playwright selectors for popups.
+    human_pause(1.0, 1.5)
+    page.screenshot(path="/tmp/popup_check.png")
 
-        # Use JS to find a button whose EXACT trimmed text is the player count.
-        # This avoids matching buttons that merely contain the digit "3".
-        player_clicked = page.evaluate(f"""
-            () => {{
-                const target = '{num_players}';
-                const btns = Array.from(document.querySelectorAll('button'));
-                const match = btns.find(b => b.textContent.trim() === target);
-                if (match) {{ match.click(); return true; }}
-                return false;
-            }}
-        """)
-        if player_clicked:
-            log.info("Selected %d players via exact JS match.", num_players)
-        else:
-            log.warning("Could not find exact player count button for %d.", num_players)
-        human_pause(0.4, 0.7)
+    popup_handled = page.evaluate(f"""
+        (numPlayers) => {{
+            const allBtns = Array.from(document.querySelectorAll('button'));
 
-        # Ensure 18 holes is selected (click it to be sure)
-        holes_clicked = page.evaluate("""
-            () => {
-                const btns = Array.from(document.querySelectorAll('button'));
-                const match = btns.find(b => b.textContent.trim() === '18 holes');
-                if (match) { match.click(); return true; }
-                return false;
-            }
-        """)
-        log.info("18 holes selected: %s", holes_clicked)
-        human_pause(0.3, 0.5)
+            // Check if popup is present by looking for "Book teetime" button
+            const confirmBtn = allBtns.find(b => b.textContent.trim().startsWith('Book teetime'));
+            if (!confirmBtn) return 'no_popup';
 
-        # Click the "Book teetime at HH:MM" confirm button
-        confirm_btn = page.query_selector('button:has-text("Book teetime")')
-        if confirm_btn:
-            log.info("Confirming popup: %s", confirm_btn.inner_text().strip())
-            fast_click_element(confirm_btn)
-            human_pause(2.5, 3.5)
-            page.screenshot(path="/tmp/after_popup_confirm.png")
-        else:
-            log.warning("Book teetime confirm button not found after selections.")
+            // Click the exact player count button
+            const playerBtn = allBtns.find(b => b.textContent.trim() === String(numPlayers));
+            if (playerBtn) playerBtn.click();
 
-    except PlaywrightTimeout:
-        log.info("No players/length popup detected — continuing.")
+            // Click 18 holes
+            const holesBtn = allBtns.find(b => b.textContent.trim() === '18 holes');
+            if (holesBtn) holesBtn.click();
+
+            // Small delay then click confirm
+            return new Promise(resolve => {{
+                setTimeout(() => {{
+                    const confirm = Array.from(document.querySelectorAll('button'))
+                        .find(b => b.textContent.trim().startsWith('Book teetime'));
+                    if (confirm) {{
+                        confirm.click();
+                        resolve('confirmed');
+                    }} else {{
+                        resolve('confirm_not_found');
+                    }}
+                }}, 600);
+            }});
+        }}
+    """, num_players)
+
+    log.info("Popup JS result: %s", popup_handled)
+    if popup_handled and popup_handled != 'no_popup':
+        log.info("Popup handled — waiting for confirmation page to load...")
+        human_pause(3.0, 4.0)
+        page.screenshot(path="/tmp/after_popup_confirm.png")
+    else:
+        log.info("No popup found — continuing directly to guest selection.")
 
     return chosen["time"], in_win
 
