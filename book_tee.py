@@ -404,18 +404,32 @@ def book_tee_time(
             # ── Phase 1: Login and pre-position ───────────────────────────────
             login_and_preposition(page, target_date)
 
-            # ── Wait until 8pm ────────────────────────────────────────────────
-            wait = seconds_until_release()
-            if wait > 0:
-                log.info("Waiting %.1fs until 20:00 UK time…", wait)
+            # ── Wait until 8pm (only if release hasn't happened yet) ───────────
+            # Release is exactly 7 days before the target date at 20:00 UK time.
+            # If the target is < 7 days away the release has already passed —
+            # skip the wait and book immediately.
+            now_dt     = datetime.now(UK_TZ)
+            target_dt  = datetime.strptime(target_date, "%Y-%m-%d")
+            release_dt = datetime(
+                target_dt.year, target_dt.month, target_dt.day,
+                RELEASE_HOUR, RELEASE_MINUTE, 0, tzinfo=UK_TZ
+            ) - timedelta(days=7)
+
+            wait = (release_dt - now_dt).total_seconds()
+
+            if wait <= 0:
+                log.info("Release time has already passed — booking immediately.")
+            else:
+                log.info("Waiting %.1fs until release at %s UK time…",
+                         wait, release_dt.strftime("%H:%M:%S"))
                 while wait > 5:
                     time.sleep(5)
-                    wait = seconds_until_release()
-                time.sleep(wait)
+                    wait = (release_dt - datetime.now(UK_TZ)).total_seconds()
+                time.sleep(max(0, wait))
 
-            jitter = random.uniform(JITTER_MIN, JITTER_MAX)
-            log.info("20:00 reached. Jitter: %.1fs", jitter)
-            time.sleep(jitter)
+                jitter = random.uniform(JITTER_MIN, JITTER_MAX)
+                log.info("Release time reached. Jitter: %.1fs", jitter)
+                time.sleep(jitter)
 
             # ── Phase 2: Refresh and grab slot ────────────────────────────────
             chosen_time = None
