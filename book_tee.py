@@ -282,36 +282,50 @@ def grab_slot(page, target_date, preferred_start, preferred_end, num_players):
     #   Players: [1] [2] [3] [4]
     #   Length:  [9 holes] [18 holes]
     #   [Book teetime at HH:MM]
-    # Must select players, confirm 18 holes, then click the confirm button.
+    # Must select correct player count, confirm 18 holes, then click confirm.
     try:
         page.wait_for_selector('button:has-text("Book teetime")', timeout=8_000)
         log.info("Players/Length popup detected.")
+        page.screenshot(path="/tmp/popup_detected.png")
 
-        # Select correct number of players
-        for sel in [
-            f'button:has-text("{num_players}")',
-        ]:
-            btn = page.query_selector(sel)
-            if btn:
-                log.info("Selecting %d players...", num_players)
-                fast_click_element(btn)
-                human_pause(0.3, 0.5)
-                break
+        # Use JS to find a button whose EXACT trimmed text is the player count.
+        # This avoids matching buttons that merely contain the digit "3".
+        player_clicked = page.evaluate(f"""
+            () => {{
+                const target = '{num_players}';
+                const btns = Array.from(document.querySelectorAll('button'));
+                const match = btns.find(b => b.textContent.trim() === target);
+                if (match) {{ match.click(); return true; }}
+                return false;
+            }}
+        """)
+        if player_clicked:
+            log.info("Selected %d players via exact JS match.", num_players)
+        else:
+            log.warning("Could not find exact player count button for %d.", num_players)
+        human_pause(0.4, 0.7)
 
-        # Ensure 18 holes is selected
-        holes_btn = page.query_selector('button:has-text("18 holes")')
-        if holes_btn:
-            log.info("Selecting 18 holes...")
-            fast_click_element(holes_btn)
-            human_pause(0.3, 0.5)
+        # Ensure 18 holes is selected (click it to be sure)
+        holes_clicked = page.evaluate("""
+            () => {
+                const btns = Array.from(document.querySelectorAll('button'));
+                const match = btns.find(b => b.textContent.trim() === '18 holes');
+                if (match) { match.click(); return true; }
+                return false;
+            }
+        """)
+        log.info("18 holes selected: %s", holes_clicked)
+        human_pause(0.3, 0.5)
 
         # Click the "Book teetime at HH:MM" confirm button
         confirm_btn = page.query_selector('button:has-text("Book teetime")')
         if confirm_btn:
-            log.info("Confirming: %s", confirm_btn.inner_text().strip())
+            log.info("Confirming popup: %s", confirm_btn.inner_text().strip())
             fast_click_element(confirm_btn)
-            human_pause(2.0, 3.0)
+            human_pause(2.5, 3.5)
             page.screenshot(path="/tmp/after_popup_confirm.png")
+        else:
+            log.warning("Book teetime confirm button not found after selections.")
 
     except PlaywrightTimeout:
         log.info("No players/length popup detected — continuing.")
