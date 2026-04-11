@@ -278,21 +278,71 @@ def grab_slot(page, target_date, preferred_start, preferred_end, num_players):
     page.screenshot(path="/tmp/after_book_click.png")
     log.info("Post-Book URL: %s", page.url)
 
+    # After clicking Book, a Players/Length popup appears:
+    #   Players: [1] [2] [3] [4]
+    #   Length:  [9 holes] [18 holes]
+    #   [Book teetime at HH:MM]
+    # Must select players, confirm 18 holes, then click the confirm button.
+    try:
+        page.wait_for_selector('button:has-text("Book teetime")', timeout=8_000)
+        log.info("Players/Length popup detected.")
+
+        # Select correct number of players
+        for sel in [
+            f'button:has-text("{num_players}")',
+        ]:
+            btn = page.query_selector(sel)
+            if btn:
+                log.info("Selecting %d players...", num_players)
+                fast_click_element(btn)
+                human_pause(0.3, 0.5)
+                break
+
+        # Ensure 18 holes is selected
+        holes_btn = page.query_selector('button:has-text("18 holes")')
+        if holes_btn:
+            log.info("Selecting 18 holes...")
+            fast_click_element(holes_btn)
+            human_pause(0.3, 0.5)
+
+        # Click the "Book teetime at HH:MM" confirm button
+        confirm_btn = page.query_selector('button:has-text("Book teetime")')
+        if confirm_btn:
+            log.info("Confirming: %s", confirm_btn.inner_text().strip())
+            fast_click_element(confirm_btn)
+            human_pause(2.0, 3.0)
+            page.screenshot(path="/tmp/after_popup_confirm.png")
+
+    except PlaywrightTimeout:
+        log.info("No players/length popup detected — continuing.")
+
     return chosen["time"], in_win
 
 
-# ── Phase 3: Add guests and finish ────────────────────────────────────────────
+# -- Phase 3: Add guests and finish --------------------------------------------
 
 def add_guests_and_finish(page, num_players, dry_run=False):
     """
     Add (num_players - 1) guests from the previous guest list, then click Finish.
+    Flow per partner:
+      1. "Who are you playing with?" modal appears automatically
+      2. Click "A GUEST"
+      3. Guest list appears — pick a random name
+      4. Repeat for next partner
+    Then click the Finish link on the summary screen.
     """
     if dry_run:
-        log.info("DRY RUN — skipping guest selection and finish.")
+        log.info("DRY RUN -- skipping guest selection and finish.")
         return True
 
     partners_needed = num_players - 1
-    log.info("Adding %d guest(s)…", partners_needed)
+    log.info("Adding %d guest(s)...", partners_needed)
+
+    excluded = {
+        "ANOTHER MEMBER", "A GUEST", "CANCEL", "FINISH", "BOOK",
+        "ADD A NEW GUEST", "Another Member", "A Guest",
+        "Cancel", "Finish", "Book", "Add a new guest",
+    }
 
     for partner_num in range(1, partners_needed + 1):
         log.info("--- Partner %d of %d ---", partner_num, partners_needed)
@@ -305,26 +355,22 @@ def add_guests_and_finish(page, num_players, dry_run=False):
             )
         except PlaywrightTimeout:
             page.screenshot(path=f"/tmp/partner_{partner_num}_modal_fail.png")
-            log.warning("Guest modal not found for partner %d — skipping.", partner_num)
+            log.warning("Guest modal not found for partner %d -- skipping.", partner_num)
             break
 
         page.screenshot(path=f"/tmp/partner_{partner_num}_modal.png")
-        log.info("Guest modal visible. Clicking A GUEST…")
+        log.info("Guest modal visible. Clicking A GUEST...")
 
-        # Click "A GUEST"
-        guest_btn = page.query_selector(
+        guest_modal_btn = page.query_selector(
             'button:has-text("A GUEST"), button:has-text("A Guest")'
         )
-        if guest_btn:
-            fast_click_element(guest_btn)
+        if guest_modal_btn:
+            fast_click_element(guest_modal_btn)
         human_pause(1.0, 1.8)
         page.screenshot(path=f"/tmp/partner_{partner_num}_guestlist.png")
 
-        # Pick a random previous guest from the list
-        # Exclude modal action buttons by filtering on known labels
-        excluded = {"ANOTHER MEMBER", "A GUEST", "CANCEL", "FINISH", "BOOK",
-                    "ADD A NEW GUEST", "Another Member", "A Guest",
-                    "Cancel", "Finish", "Book", "Add a new guest"}
+        # Pick a random name from the guest list
+        # The list appears as plain buttons — exclude known action button labels
         all_btns = page.query_selector_all("button")
         guest_btns = [
             b for b in all_btns
@@ -338,33 +384,43 @@ def add_guests_and_finish(page, num_players, dry_run=False):
         pick = random.choice(guest_btns)
         log.info("Selected guest: %s", pick.inner_text().strip())
         fast_click_element(pick)
-        human_pause(1.0, 2.0)
+        human_pause(1.2, 2.0)
 
-    # Click Finish on the summary screen
-    human_pause(1.0, 2.0)
+    # All partners added -- now click Finish
+    # From screenshots: Finish is a link "tick Finish" in bottom-right of summary
+    human_pause(1.5, 2.5)
     page.screenshot(path="/tmp/summary.png")
-    log.info("Looking for Finish button…")
+    log.info("Looking for Finish link...")
 
-    finish_btn = None
-    for sel in ['a:has-text("Finish")', 'button:has-text("Finish")',
-                'input[value="Finish"]']:
-        finish_btn = page.query_selector(sel)
-        if finish_btn:
+    finish_el = None
+    for sel in [
+        'a:has-text("Finish")',
+        'button:has-text("Finish")',
+        'input[value="Finish"]',
+        '[class*=finish]',
+        'a[href*=finish]',
+    ]:
+        finish_el = page.query_selector(sel)
+        if finish_el:
+            log.info("Found Finish via: %s", sel)
             break
 
-    if not finish_btn:
+    if not finish_el:
         page.screenshot(path="/tmp/no_finish.png")
-        raise RuntimeError("Finish button not found. Screenshot saved.")
+        raise RuntimeError("Finish button/link not found. Screenshot saved.")
 
-    log.info("Clicking Finish…")
-    fast_click_element(finish_btn)
+    log.info("Clicking Finish...")
+    fast_click_element(finish_el)
     page.wait_for_load_state("networkidle")
     human_pause(0.5, 1.0)
 
     content = page.content().lower()
     page.screenshot(path="/tmp/after_finish.png")
-    if any(w in content for w in ["confirmed", "booked", "booking reference",
-                                   "thank you", "success", "email"]):
+    # Success if confirmation message or "send emails" text is visible
+    if any(w in content for w in [
+        "confirmed", "booked", "booking reference",
+        "thank you", "success", "send emails", "email"
+    ]):
         return True
     else:
         raise RuntimeError("Booking confirmation not found after Finish.")
